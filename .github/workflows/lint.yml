@@ -1,0 +1,20 @@
+name: LaTeX Lint
+
+on: push
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run ChkTeX
+        uses: j2kun/chktex-action@v2
+        with:
+          lint-all: true
