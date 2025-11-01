@@ -1,19 +1,18 @@
-\chapter{Introduction}
-\label{chap:intro}
+\chapter{Introduction}\label{chap:intro}
 
 \section{Background and Context}
 
-The rapid evolution of cloud-native computing has fundamentally transformed how modern software systems are architected, deployed, and operated. At the core of this transformation lies Kubernetes, which has emerged as the de facto standard for container orchestration since its open-source release in 2014 \cite{kubernetes, luksa2017}. Initially developed by Google based on their internal Borg system and later donated to the Cloud Native Computing Foundation (CNCF), Kubernetes provides robust capabilities for automating deployment, scaling, and management of containerized applications \cite{cncf, hightower2017}.
+The rapid evolution of cloud-native computing has fundamentally transformed how modern software systems are architected, deployed, and operated. At the core of this transformation lies Kubernetes, which has emerged as the de facto standard for container orchestration since its open-source release in 2014~\cite{kubernetes, luksa2017}. Initially developed by Google based on their internal Borg system and later donated to the Cloud Native Computing Foundation (CNCF), Kubernetes provides robust capabilities for automating deployment, scaling, and management of containerized applications~\cite{cncf, hightower2017}.
 
-However, Kubernetes offers far more than container orchestration capabilities. Its extensible architecture, built around a declarative API model and a control plane pattern, enables it to function as a universal control plane for managing arbitrary resources \cite{kubernetes_declarative_automation}. Through Custom Resource Definitions (CRDs) and the Operator pattern, Kubernetes can be extended to manage not only infrastructure components but potentially business logic itself \cite{crd_kubernetes, operator_pattern, dobies2020}. This extensibility has been thoroughly documented in both academic literature and industry best practices \cite{hausenblas2019, ibryam2020}.
+However, Kubernetes offers far more than container orchestration capabilities. Its extensible architecture, built around a declarative API model and a control plane pattern, enables it to function as a universal control plane for managing arbitrary resources~\cite{kubernetes_declarative_automation}. Through Custom Resource Definitions (CRDs) and the Operator pattern, Kubernetes can be extended to manage not only infrastructure components but potentially business logic itself~\cite{crd_kubernetes, operator_pattern, dobies2020}. This extensibility has been thoroughly documented in both academic literature and industry best practices~\cite{hausenblas2019, ibryam2020}.
 
-Modern cloud systems strive for maximum automation and flexibility. Organizations are increasingly seeking unified platforms that can manage both infrastructure and application logic through consistent interfaces \cite{kubernetes_multivocal_review}. The declarative nature of Kubernetes, combined with its powerful extension mechanisms, positions it as a potential candidate for implementing business logic, not just orchestrating containers. This paradigm shift raises fundamental questions about the boundaries of the Infrastructure-as-Code approach and whether Kubernetes can serve as a unified control plane for both infrastructure and application concerns \cite{iac_devops}.
+Modern cloud systems strive for maximum automation and flexibility. Organizations are increasingly seeking unified platforms that can manage both infrastructure and application logic through consistent interfaces~\cite{kubernetes_multivocal_review}. The declarative nature of Kubernetes, combined with its powerful extension mechanisms, positions it as a potential candidate for implementing business logic, not just orchestrating containers. This paradigm shift raises fundamental questions about the boundaries of the Infrastructure-as-Code approach and whether Kubernetes can serve as a unified control plane for both infrastructure and application concerns~\cite{iac_devops}.
 
 \section{Problem Statement}
 
 Despite the widespread adoption of Kubernetes for infrastructure management, there remains a lack of systematic study regarding its applicability for implementing business logic using CRDs and the Operator pattern. Traditional application architectures typically separate business logic implementation from infrastructure concerns, with applications deployed as microservices that implement domain-specific functionality through conventional programming approaches.
 
-Several projects have demonstrated the power of extending Kubernetes through CRDs and Operators, including Crossplane for infrastructure provisioning \cite{crossplane}, Kubeflow for machine learning workflows, and various database operators \cite{openshift_operators_lifecycle}. However, most existing solutions focus on infrastructure management or specialized workloads rather than general-purpose business logic \cite{kubebuilder}.
+Several projects have demonstrated the power of extending Kubernetes through CRDs and Operators, including Crossplane for infrastructure provisioning~\cite{crossplane}, Kubeflow for machine learning workflows, and various database operators~\cite{openshift_operators_lifecycle}. However, most existing solutions focus on infrastructure management or specialized workloads rather than general-purpose business logic~\cite{kubebuilder}.
 
 The main problem lies in understanding whether and how Kubernetes, through CRDs and Operators, can effectively serve as a platform for implementing business logic. Key questions include: What are the performance characteristics of such an approach? How does it compare to traditional REST API-based architectures? What are the operational implications? What types of business problems are well-suited to this paradigm?
 
@@ -36,13 +35,13 @@ This thesis investigates the following research questions:
 The primary objective of this research is to explore and evaluate Kubernetes as a platform for implementing business logic through Custom Resource Definitions and the Operator pattern. Specific objectives include:
 
 \begin{enumerate}
-    \item Study existing approaches to extending the Kubernetes API through CRDs and Operators, analyzing patterns and best practices established by the cloud-native community \cite{ibryam2020, hausenblas2019}.
+    \item Study existing approaches to extending the Kubernetes API through CRDs and Operators, analyzing patterns and best practices established by the cloud-native community~\cite{ibryam2020, hausenblas2019}.
     
     \item Design and develop a prototype application that implements representative business logic using CRDs and Operators, demonstrating the feasibility of this approach.
     
-    \item Establish comprehensive observability for the prototype system using cloud-native tools including Prometheus and OpenTelemetry to enable detailed performance analysis \cite{prometheus, opentelemetry, prometheus_cloud_native_monitoring}.
+    \item Establish comprehensive observability for the prototype system using cloud-native tools including Prometheus and OpenTelemetry to enable detailed performance analysis~\cite{prometheus, opentelemetry, prometheus_cloud_native_monitoring}.
     
-    \item Conduct experimental comparisons between the CRD/Operator-based implementation and a traditional architecture using PostgreSQL with REST API.
+    \item Conduct experimental comparisons between the CRD/Operator-based implementation and a traditional architecture using PostgreSQL with REST API\@.
     
     \item Analyze results across multiple dimensions including reaction time to events, implementation complexity, observability capabilities, and system reliability.
 \end{enumerate}
@@ -50,7 +49,7 @@ The primary objective of this research is to explore and evaluate Kubernetes as 
 The expected contributions of this work include:
 
 \begin{itemize}
-    \item A systematic analysis of using Kubernetes CRDs and Operators for business logic implementation, filling a gap in current research \cite{kubernetes_multivocal_review}.
+    \item A systematic analysis of using Kubernetes CRDs and Operators for business logic implementation, filling a gap in current research~\cite{kubernetes_multivocal_review}.
     
     \item A working prototype demonstrating practical patterns for modeling business entities and processes as Kubernetes custom resources.
     
@@ -65,32 +64,32 @@ The expected contributions of this work include:
 
 This research employs a mixed-methods approach combining system design, implementation, and experimental evaluation:
 
-\textbf{Phase 1 - Literature Review and Architecture Design}: Conduct comprehensive review of existing literature on Kubernetes extensibility, CRDs, Operators, and related patterns \cite{luksa2017, dobies2020, hausenblas2019}. Design the architecture for both the CRD/Operator-based system and the baseline traditional system.
+\textbf{Phase 1 — Literature Review and Architecture Design}: Conduct comprehensive review of existing literature on Kubernetes extensibility, CRDs, Operators, and related patterns~\cite{luksa2017, dobies2020, hausenblas2019}. Design the architecture for both the CRD/Operator-based system and the baseline traditional system.
 
-\textbf{Phase 2 - Implementation}: Develop the prototype systems using appropriate tools and frameworks. The CRD/Operator implementation will utilize Kubebuilder for scaffolding and controller development \cite{kubebuilder}. Both systems will implement equivalent business logic to enable fair comparison.
+\textbf{Phase 2 — Implementation}: Develop the prototype systems using appropriate tools and frameworks. The CRD/Operator implementation will utilize Kubebuilder for scaffolding and controller development~\cite{kubebuilder}. Both systems will implement equivalent business logic to enable fair comparison.
 
-\textbf{Phase 3 - Observability Setup}: Configure comprehensive monitoring using Prometheus for metrics collection and OpenTelemetry for distributed tracing \cite{prometheus, opentelemetry, prometheus_cloud_native_monitoring}. Implement GitOps practices using ArgoCD for deployment management \cite{argocd, gitops}.
+\textbf{Phase 3 — Observability Setup}: Configure comprehensive monitoring using Prometheus for metrics collection and OpenTelemetry for distributed tracing~\cite{prometheus, opentelemetry, prometheus_cloud_native_monitoring}. Implement GitOps practices using ArgoCD for deployment management~\cite{argocd, gitops}.
 
-\textbf{Phase 4 - Experimental Evaluation}: Conduct controlled experiments measuring key performance indicators including reaction time to events, implementation complexity, observability coverage, and reliability \cite{hpc_monitoring_kubernetes_prometheus}.
+\textbf{Phase 4 — Experimental Evaluation}: Conduct controlled experiments measuring key performance indicators including reaction time to events, implementation complexity, observability coverage, and reliability~\cite{hpc_monitoring_kubernetes_prometheus}.
 
-\textbf{Phase 5 - Analysis and Conclusions}: Analyze experimental results, synthesize findings, and formulate conclusions on the applicability of the approach.
+\textbf{Phase 5 — Analysis and Conclusions}: Analyze experimental results, synthesize findings, and formulate conclusions on the applicability of the approach.
 
 \section{Thesis Organization}
 
 The remainder of this thesis is organized as follows:
 
-\textbf{Chapter 2 - Literature Review}: Provides comprehensive background on Kubernetes architecture, Custom Resource Definitions, the Operator pattern, and related work in extending Kubernetes for business logic. Reviews relevant observability tools and GitOps practices.
+\textbf{Chapter 2 — Literature Review}: Provides comprehensive background on Kubernetes architecture, Custom Resource Definitions, the Operator pattern, and related work in extending Kubernetes for business logic. Reviews relevant observability tools and GitOps practices.
 
-\textbf{Chapter 3 - System Design and Architecture}: Describes the design of both the CRD/Operator-based system and the traditional baseline system. Details the business logic domain selected for implementation and architectural decisions.
+\textbf{Chapter 3 — System Design and Architecture}: Describes the design of both the CRD/Operator-based system and the traditional baseline system. Details the business logic domain selected for implementation and architectural decisions.
 
-\textbf{Chapter 4 - Implementation}: Covers implementation details including CRD specifications, Operator controller logic, observability instrumentation, and deployment configuration.
+\textbf{Chapter 4 — Implementation}: Covers implementation details including CRD specifications, Operator controller logic, observability instrumentation, and deployment configuration.
 
-\textbf{Chapter 5 - Experimental Evaluation}: Presents the experimental setup, methodology, and results of performance comparisons between the two approaches.
+\textbf{Chapter 5 — Experimental Evaluation}: Presents the experimental setup, methodology, and results of performance comparisons between the two approaches.
 
-\textbf{Chapter 6 - Discussion}: Analyzes results, discusses implications, identifies suitable use cases, and provides recommendations for practitioners.
+\textbf{Chapter 6 — Discussion}: Analyzes results, discusses implications, identifies suitable use cases, and provides recommendations for practitioners.
 
-\textbf{Chapter 7 - Conclusion}: Summarizes key findings, discusses limitations, and suggests directions for future work.
+\textbf{Chapter 7 — Conclusion}: Summarizes key findings, discusses limitations, and suggests directions for future work.
 
 \section{Summary}
 
-This chapter has introduced the research problem of using Kubernetes as a platform for business logic through Custom Resource Definitions and the Operator pattern. While Kubernetes has proven highly successful for infrastructure management, its applicability for implementing business logic remains understudied \cite{kubernetes_multivocal_review}. This thesis aims to address this gap through systematic design, implementation, and evaluation of both CRD/Operator-based and traditional architectures. The expected outcomes include practical insights into when and how this approach can be beneficial, contributing to the broader understanding of cloud-native application development patterns.
+This chapter has introduced the research problem of using Kubernetes as a platform for business logic through Custom Resource Definitions and the Operator pattern. While Kubernetes has proven highly successful for infrastructure management, its applicability for implementing business logic remains understudied~\cite{kubernetes_multivocal_review}. This thesis aims to address this gap through systematic design, implementation, and evaluation of both CRD/Operator-based and traditional architectures. The expected outcomes include practical insights into when and how this approach can be beneficial, contributing to the broader understanding of cloud-native application development patterns.
