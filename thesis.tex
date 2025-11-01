@@ -70,14 +70,14 @@
 \usepackage{longtable}
 \usepackage[font=singlespacing, labelfont=bf]{caption}
 %Hints
-\newcommand\pic[1]{(Fig. \ref{#1})} %Ref on figure
-\newcommand\tab[1]{(Tab. \ref{#1})} %Ref on table
+\newcommand\pic[1]{(Fig.\ \ref{#1})} %Ref on figure
+\newcommand\tab[1]{(Tab.\ \ref{#1})} %Ref on table
 
 \setlength{\headheight}{32.0976pt}
 \usepackage{enumitem}
 \newlist{inlinelist}{enumerate*}{1}
 \setlist*[inlinelist,1]{%
-  label=(\arabic*),
+  label= (\arabic*),
 }
 
 % \setcounter{secnumdepth}{4}
@@ -117,7 +117,7 @@
 \newcommand{\dedication}[1]
    {\thispagestyle{empty}
      
-   \begin{flushleft}\raggedleft #1\end{flushleft}
+   \begin{flushleft}\raggedleft#1\end{flushleft}
 }
 
 \begin{document}

@@ -1,5 +1,4 @@
-\chapter{Literature Review}
-\label{chap:lr}
+\chapter{Literature Review}\label{chap:lr}
 
 \section{Introduction}
 
@@ -9,69 +8,69 @@ This chapter provides a comprehensive review of the literature and technologies 
 
 \subsection{Container Orchestration and Kubernetes}
 
-Kubernetes, initially developed by Google and open-sourced in 2014, has become the leading platform for container orchestration \cite{kubernetes, luksa2017}. The system builds upon years of experience running production workloads at Google, combined with best-of-breed ideas from the open-source community \cite{cncf, hightower2017}. Kubernetes automates deployment, scaling, and management of containerized applications, providing a platform-agnostic abstraction layer over underlying infrastructure.
+Kubernetes, initially developed by Google and open-sourced in 2014, has become the leading platform for container orchestration~\cite{kubernetes, luksa2017}. The system builds upon years of experience running production workloads at Google, combined with best-of-breed ideas from the open-source community~\cite{cncf, hightower2017}. Kubernetes automates deployment, scaling, and management of containerized applications, providing a platform-agnostic abstraction layer over underlying infrastructure.
 
-The architecture of Kubernetes follows a control plane pattern, where a centralized control plane manages the desired state of the cluster, and worker nodes execute containerized workloads \cite{k8s_architecture, luksa2017}. The control plane consists of several key components: the API server, which exposes the Kubernetes API and serves as the entry point for all operations; etcd, a distributed key-value store that maintains cluster state; the scheduler, which assigns pods to nodes; and the controller manager, which runs controllers to reconcile actual state with desired state \cite{ibryam2020}.
+The architecture of Kubernetes follows a control plane pattern, where a centralized control plane manages the desired state of the cluster, and worker nodes execute containerized workloads~\cite{k8s_architecture, luksa2017}. The control plane consists of several key components: the API server, which exposes the Kubernetes API and serves as the entry point for all operations; etcd, a distributed key-value store that maintains cluster state; the scheduler, which assigns pods to nodes; and the controller manager, which runs controllers to reconcile actual state with desired state~\cite{ibryam2020}.
 
 \subsection{Declarative API Model}
 
-A distinguishing feature of Kubernetes is its declarative API model \cite{kubernetes_declarative_automation}. Rather than imperatively instructing the system on how to perform operations, users declare the desired state of resources, and Kubernetes automatically reconciles the actual state to match. This declarative approach enables powerful automation capabilities and forms the foundation for extending Kubernetes functionality \cite{hausenblas2019}.
+A distinguishing feature of Kubernetes is its declarative API model~\cite{kubernetes_declarative_automation}. Rather than imperatively instructing the system on how to perform operations, users declare the desired state of resources, and Kubernetes automatically reconciles the actual state to match. This declarative approach enables powerful automation capabilities and forms the foundation for extending Kubernetes functionality~\cite{hausenblas2019}.
 
-The Kubernetes API is organized into API groups and versions, providing a structured approach to API evolution and extensibility \cite{k8s_api}. Core resources like Pods, Services, and Deployments are part of the built-in API, while custom resources can be added through extension mechanisms. This design has been validated through extensive production use and is thoroughly documented in standard references \cite{luksa2017, hightower2017}.
+The Kubernetes API is organized into API groups and versions, providing a structured approach to API evolution and extensibility~\cite{k8s_api}. Core resources like Pods, Services, and Deployments are part of the built-in API, while custom resources can be added through extension mechanisms. This design has been validated through extensive production use and is thoroughly documented in standard references~\cite{luksa2017, hightower2017}.
 
 \subsection{Controller Pattern and Reconciliation Loop}
 
-Kubernetes extensively uses the controller pattern for managing resources \cite{controller_pattern, ibryam2020}. A controller watches for changes to resources of interest and takes actions to reconcile the actual state with the desired state specified in the resource definition. This reconciliation loop runs continuously, enabling self-healing and automated management capabilities \cite{dobies2020}.
+Kubernetes extensively uses the controller pattern for managing resources~\cite{controller_pattern, ibryam2020}. A controller watches for changes to resources of interest and takes actions to reconcile the actual state with the desired state specified in the resource definition. This reconciliation loop runs continuously, enabling self-healing and automated management capabilities~\cite{dobies2020}.
 
-Controllers operate independently and asynchronously, communicating only through the Kubernetes API server. This architectural pattern enables high scalability and resilience, as controllers can be distributed across multiple instances and automatically recover from failures \cite{hausenblas2019}. The controller pattern has become a fundamental building block for cloud-native applications and is extensively covered in Kubernetes design patterns literature \cite{ibryam2020}.
+Controllers operate independently and asynchronously, communicating only through the Kubernetes API server. This architectural pattern enables high scalability and resilience, as controllers can be distributed across multiple instances and automatically recover from failures~\cite{hausenblas2019}. The controller pattern has become a fundamental building block for cloud-native applications and is extensively covered in Kubernetes design patterns literature~\cite{ibryam2020}.
 
 \section{Custom Resource Definitions}
 
 \subsection{Extending the Kubernetes API}
 
-Kubernetes provides mechanisms for extending its API, with Custom Resource Definitions (CRDs) being the primary approach \cite{extending_k8s_api, hausenblas2019}. CRDs represent a declarative approach to defining new resource types without requiring custom API server code, making them accessible to operators and developers \cite{luksa2017}.
+Kubernetes provides mechanisms for extending its API, with Custom Resource Definitions (CRDs) being the primary approach~\cite{extending_k8s_api, hausenblas2019}. CRDs represent a declarative approach to defining new resource types without requiring custom API server code, making them accessible to operators and developers~\cite{luksa2017}.
 
-A CRD defines a new resource type, including its API group, version, kind, and schema, making it a first-class citizen in the Kubernetes API \cite{crd_kubernetes, hausenblas2019}. This approach enables extending Kubernetes to manage domain-specific resources while maintaining consistency with the platform's declarative model.
+A CRD defines a new resource type, including its API group, version, kind, and schema, making it a first-class citizen in the Kubernetes API~\cite{crd_kubernetes, hausenblas2019}. This approach enables extending Kubernetes to manage domain-specific resources while maintaining consistency with the platform's declarative model.
 
 \subsection{CRD Features and Capabilities}
 
-Modern CRDs support advanced features including schema validation using OpenAPI v3, multiple versions with conversion webhooks, status subresources for privilege separation, custom columns in kubectl output, and structural schemas for efficient storage and processing \cite{crd_features, hausenblas2019}. These capabilities enable CRDs to provide rich, production-ready APIs comparable to built-in Kubernetes resources.
+Modern CRDs support advanced features including schema validation using OpenAPI v3, multiple versions with conversion webhooks, status subresources for privilege separation, custom columns in kubectl output, and structural schemas for efficient storage and processing~\cite{crd_features, hausenblas2019}. These capabilities enable CRDs to provide rich, production-ready APIs comparable to built-in Kubernetes resources.
 
-CRDs enable developers to model custom workflows, advanced configurations, and support for domain-specific requirements that go beyond Kubernetes' built-in resources. The flexibility of CRDs has made them a cornerstone of cloud-native extensibility, with hundreds of widely-used CRDs available in the ecosystem \cite{kubernetes_multivocal_review}.
+CRDs enable developers to model custom workflows, advanced configurations, and support for domain-specific requirements that go beyond Kubernetes' built-in resources. The flexibility of CRDs has made them a cornerstone of cloud-native extensibility, with hundreds of widely-used CRDs available in the ecosystem~\cite{kubernetes_multivocal_review}.
 
 \subsection{Performance and Scalability Considerations}
 
-The performance characteristics of CRDs depend heavily on the underlying etcd datastore, which stores all cluster state. Research on etcd performance shows that at scale, write latency can become a bottleneck, particularly for clusters with many CRD instances \cite{etcd_impact}. Organizations deploying CRD-intensive applications must carefully consider etcd capacity planning and implement appropriate monitoring.
+The performance characteristics of CRDs depend heavily on the underlying etcd datastore, which stores all cluster state. Research on etcd performance shows that at scale, write latency can become a bottleneck, particularly for clusters with many CRD instances~\cite{etcd_impact}. Organizations deploying CRD-intensive applications must carefully consider etcd capacity planning and implement appropriate monitoring.
 
 \section{The Operator Pattern}
 
 \subsection{Operator Fundamentals}
 
-The Operator pattern represents a methodology for packaging, deploying, and managing Kubernetes applications by extending the Kubernetes API \cite{operator_pattern, dobies2020}. Operators combine CRDs with custom controllers to encode operational knowledge about managing complex applications, effectively acting as automated site reliability engineers \cite{openshift_operators_lifecycle}.
+The Operator pattern represents a methodology for packaging, deploying, and managing Kubernetes applications by extending the Kubernetes API~\cite{operator_pattern, dobies2020}. Operators combine CRDs with custom controllers to encode operational knowledge about managing complex applications, effectively acting as automated site reliability engineers~\cite{openshift_operators_lifecycle}.
 
-Operators capture the aim of human operators who manage services—they have deep knowledge of how systems should behave, how to deploy them, and how to react to problems. By codifying this operational knowledge, Operators enable applications to be self-managing, automatically handling tasks like upgrades, backups, scaling, and failure recovery \cite{dobies2020, ibryam2020}.
+Operators capture the aim of human operators who manage services—they have deep knowledge of how systems should behave, how to deploy them, and how to react to problems. By codifying this operational knowledge, Operators enable applications to be self-managing, automatically handling tasks like upgrades, backups, scaling, and failure recovery~\cite{dobies2020, ibryam2020}.
 
 \subsection{Operator Development Frameworks}
 
-Kubebuilder is the most prominent framework for facilitating Operator development \cite{kubebuilder}. Built on top of controller-runtime and controller-tools libraries, it provides scaffolding for creating CRDs and controllers using Go \cite{hausenblas2019}. The framework automates much of the boilerplate code generation, allowing developers to focus on implementing business logic in the reconciliation loop.
+Kubebuilder is the most prominent framework for facilitating Operator development~\cite{kubebuilder}. Built on top of controller-runtime and controller-tools libraries, it provides scaffolding for creating CRDs and controllers using Go~\cite{hausenblas2019}. The framework automates much of the boilerplate code generation, allowing developers to focus on implementing business logic in the reconciliation loop.
 
-Research on Operator development best practices emphasizes the importance of proper RBAC configuration, efficient handling of custom resources, and robust error handling \cite{openshift_operators_lifecycle}. Studies analyzing Operator bugs across Kubernetes operators have identified common failure patterns related to state management, error handling, and race conditions \cite{operator_bugs}.
+Research on Operator development best practices emphasizes the importance of proper RBAC configuration, efficient handling of custom resources, and robust error handling~\cite{openshift_operators_lifecycle}. Studies analyzing Operator bugs across Kubernetes operators have identified common failure patterns related to state management, error handling, and race conditions~\cite{operator_bugs}.
 
 \subsection{Operator Use Cases and Applications}
 
-Operators have been successfully applied to numerous domains including database management, monitoring systems, service meshes, and machine learning platforms \cite{dobies2020, openshift_operators_lifecycle}. For infrastructure provisioning, Crossplane exemplifies using Operators to manage cloud resources declaratively through Kubernetes \cite{crossplane}. This approach enables treating infrastructure as Kubernetes resources, managed through the same workflows as application deployments.
+Operators have been successfully applied to numerous domains including database management, monitoring systems, service meshes, and machine learning platforms~\cite{dobies2020, openshift_operators_lifecycle}. For infrastructure provisioning, Crossplane exemplifies using Operators to manage cloud resources declaratively through Kubernetes~\cite{crossplane}. This approach enables treating infrastructure as Kubernetes resources, managed through the same workflows as application deployments.
 
 \section{Related Systems and Approaches}
 
 \subsection{Infrastructure as Code and GitOps}
 
-Infrastructure as Code (IaC) provides declarative approaches to infrastructure provisioning \cite{iac_devops}. While similar in declaring desired state, traditional IaC tools typically use imperative execution models and lack the continuous reconciliation capabilities inherent to Kubernetes controllers \cite{kubernetes_declarative_automation}.
+Infrastructure as Code (IaC) provides declarative approaches to infrastructure provisioning~\cite{iac_devops}. While similar in declaring desired state, traditional IaC tools typically use imperative execution models and lack the continuous reconciliation capabilities inherent to Kubernetes controllers~\cite{kubernetes_declarative_automation}.
 
-The GitOps methodology extends IaC principles by using Git as the single source of truth and implementing continuous delivery through pull-based reconciliation \cite{gitops, argocd}. GitOps shares philosophical alignment with Kubernetes' declarative model, making it a natural fit for managing Kubernetes resources including CRDs.
+The GitOps methodology extends IaC principles by using Git as the single source of truth and implementing continuous delivery through pull-based reconciliation~\cite{gitops, argocd}. GitOps shares philosophical alignment with Kubernetes' declarative model, making it a natural fit for managing Kubernetes resources including CRDs.
 
 \subsection{Service Mesh Architectures}
 
-Service mesh technologies like Istio demonstrate advanced usage of Kubernetes extensibility for managing service-to-service communication \cite{istio}. These systems use CRDs extensively to define traffic management, security policies, and observability configurations, providing examples of complex operational logic implemented through Kubernetes extension mechanisms \cite{nist_service_mesh_security}.
+Service mesh technologies like Istio demonstrate advanced usage of Kubernetes extensibility for managing service-to-service communication~\cite{istio}. These systems use CRDs extensively to define traffic management, security policies, and observability configurations, providing examples of complex operational logic implemented through Kubernetes extension mechanisms~\cite{nist_service_mesh_security}.
 
 Research comparing service mesh architectures reveals trade-offs between feature richness and operational complexity, with implications for designing custom business logic controllers. The patterns used in service meshes offer lessons for separating concerns in business logic implementations.
 
@@ -79,13 +78,13 @@ Research comparing service mesh architectures reveals trade-offs between feature
 
 \subsection{Monitoring and Metrics Collection}
 
-Observability in distributed systems encompasses metrics, logs, and traces. Prometheus has emerged as the de facto standard for metrics collection in Kubernetes environments \cite{prometheus, prometheus_cloud_native_monitoring}. Its pull-based model, powerful query language (PromQL), and native Kubernetes service discovery make it well-suited for cloud-native monitoring \cite{hpc_monitoring_kubernetes_prometheus}.
+Observability in distributed systems encompasses metrics, logs, and traces. Prometheus has emerged as the de facto standard for metrics collection in Kubernetes environments~\cite{prometheus, prometheus_cloud_native_monitoring}. Its pull-based model, powerful query language (PromQL), and native Kubernetes service discovery make it well-suited for cloud-native monitoring~\cite{hpc_monitoring_kubernetes_prometheus}.
 
 For CRD-based applications, proper instrumentation of controllers and business logic is essential for understanding system behavior. Controllers should expose metrics about reconciliation loop performance, error rates, and business-specific indicators.
 
 \subsection{Distributed Tracing}
 
-OpenTelemetry represents the industry standard for distributed tracing and observability instrumentation \cite{opentelemetry}. Distributed tracing becomes particularly important when business logic spans multiple reconciliation loops and controllers, as it enables tracking the cascading changes of objects through the Kubernetes control plane.
+OpenTelemetry represents the industry standard for distributed tracing and observability instrumentation~\cite{opentelemetry}. Distributed tracing becomes particularly important when business logic spans multiple reconciliation loops and controllers, as it enables tracking the cascading changes of objects through the Kubernetes control plane.
 
 The integration of observability tools with Kubebuilder-based Operators is well-established, with frameworks providing automatic instrumentation of common controller metrics. However, domain-specific business metrics require custom implementation within the reconciliation logic.
 
@@ -93,30 +92,30 @@ The integration of observability tools with Kubebuilder-based Operators is well-
 
 \subsection{Kubernetes Performance Characteristics}
 
-Studies have examined Kubernetes performance under various conditions. Research on etcd deployment impact demonstrates that control plane performance and application performance both depend critically on etcd performance characteristics \cite{etcd_impact}. Write latency and throughput limitations in etcd can become bottlenecks for CRD-intensive workloads.
+Studies have examined Kubernetes performance under various conditions. Research on etcd deployment impact demonstrates that control plane performance and application performance both depend critically on etcd performance characteristics~\cite{etcd_impact}. Write latency and throughput limitations in etcd can become bottlenecks for CRD-intensive workloads.
 
 \subsection{Complexity and Operational Considerations}
 
-While Kubernetes provides powerful capabilities, it introduces significant complexity and operational overhead \cite{kubernetes, kubernetes_multivocal_review}. Managing a production Kubernetes cluster requires expertise in networking, security, storage, and distributed systems. Organizations must weigh these operational costs against the benefits of Kubernetes' automation and standardization.
+While Kubernetes provides powerful capabilities, it introduces significant complexity and operational overhead~\cite{kubernetes, kubernetes_multivocal_review}. Managing a production Kubernetes cluster requires expertise in networking, security, storage, and distributed systems. Organizations must weigh these operational costs against the benefits of Kubernetes' automation and standardization.
 
-For business logic implementations specifically, additional complexity arises from the need to design appropriate CRD schemas, implement robust controllers, and handle edge cases in the reconciliation logic \cite{hausenblas2019}. The learning curve for Kubernetes development is substantial, potentially impacting development velocity.
+For business logic implementations specifically, additional complexity arises from the need to design appropriate CRD schemas, implement robust controllers, and handle edge cases in the reconciliation logic~\cite{hausenblas2019}. The learning curve for Kubernetes development is substantial, potentially impacting development velocity.
 
 \section{Research Gaps}
 
 Despite extensive research on Kubernetes architecture, CRDs, and Operators, several gaps exist in current literature:
 
 \begin{enumerate}
-    \item Limited systematic study of using Kubernetes for general-purpose business logic implementation, with most examples focused on infrastructure or specialized domains \cite{kubernetes_multivocal_review}.
+    \item Limited systematic study of using Kubernetes for general-purpose business logic implementation, with most examples focused on infrastructure or specialized domains~\cite{kubernetes_multivocal_review}.
     
     \item Insufficient quantitative performance comparisons between CRD/Operator-based approaches and traditional architectures for equivalent business logic.
     
     \item Lack of comprehensive guidelines on when the CRD/Operator pattern is appropriate for business applications versus when traditional architectures should be preferred.
     
-    \item Limited research on implementation complexity and developer experience when using Kubernetes as a business logic platform \cite{kubernetes_multivocal_review}.
+    \item Limited research on implementation complexity and developer experience when using Kubernetes as a business logic platform~\cite{kubernetes_multivocal_review}.
 \end{enumerate}
 
 This thesis aims to address these gaps through systematic design, implementation, and evaluation of Kubernetes-based business logic using CRDs and Operators.
 
 \section{Summary}
 
-This chapter has reviewed the relevant literature on Kubernetes architecture, extensibility mechanisms, and related technologies. Kubernetes provides a powerful platform for building cloud-native applications through its declarative API, CRDs, and Operator pattern \cite{luksa2017, hightower2017, dobies2020}. While extensively used for infrastructure management, its application to general business logic remains understudied \cite{kubernetes_multivocal_review}. The next chapter describes the design of systems to explore this research question.
+This chapter has reviewed the relevant literature on Kubernetes architecture, extensibility mechanisms, and related technologies. Kubernetes provides a powerful platform for building cloud-native applications through its declarative API, CRDs, and Operator pattern~\cite{luksa2017, hightower2017, dobies2020}. While extensively used for infrastructure management, its application to general business logic remains understudied~\cite{kubernetes_multivocal_review}. The next chapter describes the design of systems to explore this research question.
