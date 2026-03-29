@@ -13,3 +13,5 @@
 *.fdb_latexmk
 *.back
 *.txt
+*.docx
+.DS_Store
