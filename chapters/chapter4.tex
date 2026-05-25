@@ -1,3 +1,277 @@
 \chapter{Implementation}\label{chap:impl}
 
-\ldots
+This chapter describes the implementation of the systems introduced in Chapter~\ref{chap:met}. Two functionally equivalent systems were developed: a Kubernetes-native billing system using Custom Resource Definitions (CRDs) and the Operator pattern, and a traditional monolithic backend based on REST APIs and a relational database. The goal of this chapter is to provide detailed insight into implementation decisions, internal logic, and system behavior.
+
+\section{Implementation Overview}
+
+Both systems were implemented in the Go programming language to ensure consistency in comparison. Despite sharing the same business domain, the systems differ significantly in architecture, execution model, and state management.
+
+The implementation focuses on:
+\begin{itemize}
+    \item Modeling business entities
+    \item Implementing business logic
+    \item Managing state transitions
+    \item Integrating observability
+\end{itemize}
+
+\section{Kubernetes-Based System Implementation}
+
+\subsection{Project Structure}
+
+The Kubernetes-based system was implemented using the Kubebuilder framework. The project follows standard Operator project structure:
+
+\begin{itemize}
+    \item \texttt{api/}: CRD definitions (types and schemas)
+    \item \texttt{controllers/}: reconciliation logic
+    \item \texttt{config/}: Kubernetes manifests (CRDs, RBAC, deployment)
+\end{itemize}
+
+Kubebuilder and controller-runtime were used to scaffold and manage the Operator lifecycle.
+
+\subsection{Custom Resource Definitions}
+
+Two CRDs were implemented:
+
+\subsubsection{BillingPlan CRD}
+
+The \texttt{BillingPlan} resource defines pricing configuration:
+
+\begin{itemize}
+    \item \texttt{price}
+    \item \texttt{currency}
+    \item \texttt{billingPeriod}
+    \item \texttt{limits} (map of usage constraints)
+\end{itemize}
+
+This resource acts as a static configuration entity referenced by subscriptions.
+
+\subsubsection{Subscription CRD}
+
+The \texttt{Subscription} resource represents active user subscriptions:
+
+\begin{itemize}
+    \item \texttt{userId}
+    \item \texttt{planRef}
+    \item \texttt{status.state}
+    \item \texttt{status.lastPayment}
+    \item \texttt{status.nextBilling}
+\end{itemize}
+
+The \texttt{status} subresource is used to store computed state, separating desired and observed state.
+
+\subsection{Operator Controller Implementation}
+
+The core business logic is implemented in the \texttt{SubscriptionReconciler}. The reconciliation loop continuously processes Subscription resources and ensures correct system state.
+
+\subsubsection{Reconciliation Workflow}
+
+The reconciliation logic follows a structured sequence:
+
+\begin{enumerate}
+    \item Fetch the Subscription resource
+    \item Validate referenced BillingPlan
+    \item Attach finalizer if not present
+    \item Handle deletion logic if resource is marked for deletion
+    \item Initialize subscription state if newly created
+    \item Update status fields
+\end{enumerate}
+
+This logic effectively implements a state machine driven by Kubernetes events.
+
+\subsubsection{Finalizer Handling}
+
+A Kubernetes finalizer (\texttt{billing.cloud-native.io/finalizer}) is used to ensure safe deletion. When a Subscription is deleted:
+
+\begin{itemize}
+    \item The reconciliation loop intercepts the deletion event
+    \item Final billing logic is executed
+    \item The finalizer is removed
+    \item Kubernetes completes resource deletion
+\end{itemize}
+
+This mechanism guarantees that cleanup logic is executed reliably.
+
+\subsubsection{State Initialization}
+
+When a new Subscription is created:
+
+\begin{itemize}
+    \item The system verifies that the referenced BillingPlan exists
+    \item The state is set to \texttt{Active}
+    \item \texttt{lastPayment} is set to current time
+    \item \texttt{nextBilling} is calculated based on billing period
+\end{itemize}
+
+\subsection{Execution Model}
+
+The system operates in an event-driven manner:
+
+\begin{itemize}
+    \item Resource changes trigger reconciliation
+    \item Controllers process events asynchronously
+    \item The system converges toward desired state
+\end{itemize}
+
+No direct request-response execution is required for business logic.
+
+\subsection{Observability Implementation}
+
+\subsubsection{Metrics}
+
+Custom Prometheus metrics were implemented:
+
+\begin{itemize}
+    \item \texttt{billing\_active\_subscriptions} (Gauge)
+    \item \texttt{billing\_revenue\_total} (Counter)
+    \item \texttt{billing\_payment\_failures} (Counter)
+\end{itemize}
+
+These metrics track business-level system behavior rather than only infrastructure metrics.
+
+\subsubsection{Tracing}
+
+OpenTelemetry was integrated into the reconciliation loop. Each execution of the controller creates a trace span:
+
+\begin{itemize}
+    \item Span name: \texttt{ReconcileSubscription}
+    \item Captures execution duration and behavior
+\end{itemize}
+
+This enables tracing of asynchronous control-plane events.
+
+\subsection{Deployment}
+
+The system was deployed in a local Kubernetes environment using Minikube. CRDs and controller were applied using standard Kubernetes manifests and managed via kubectl.
+
+\section{Traditional System Implementation}
+
+\subsection{Project Structure}
+
+The traditional backend follows a monolithic architecture:
+
+\begin{itemize}
+    \item \texttt{handlers/}: HTTP route handlers
+    \item \texttt{models/}: database models
+    \item \texttt{services/}: business logic
+    \item \texttt{db/}: database connection setup
+\end{itemize}
+
+\subsection{REST API Implementation}
+
+The system exposes standard REST endpoints:
+
+\begin{itemize}
+    \item \texttt{GET /plans}
+    \item \texttt{POST /plans}
+    \item \texttt{GET /subscriptions}
+    \item \texttt{POST /subscriptions}
+    \item \texttt{POST /subscriptions/\{id\}/cancel}
+\end{itemize}
+
+Business logic is executed directly within HTTP request handlers.
+
+\subsection{Database Layer}
+
+The system uses PostgreSQL 15 for persistence, accessed through GORM ORM.
+
+\subsubsection{Data Model}
+
+\begin{itemize}
+    \item BillingPlan table
+    \item Subscription table
+\end{itemize}
+
+Relationships are implemented using foreign keys.
+
+\subsection{Asynchronous Worker}
+
+A background worker periodically checks for expired subscriptions:
+
+\begin{itemize}
+    \item Iterates through subscriptions
+    \item Compares current time with \texttt{nextBilling}
+    \item Updates state to \texttt{Expired} if necessary
+\end{itemize}
+
+This replaces the continuous reconciliation loop used in the Kubernetes system.
+
+\subsection{Execution Model}
+
+The system primarily follows a synchronous model:
+
+\begin{itemize}
+    \item Clients initiate actions via HTTP requests
+    \item Server processes requests and updates database
+\end{itemize}
+
+Asynchronous logic is limited to periodic background tasks.
+
+\subsection{Observability Implementation}
+
+\subsubsection{Metrics}
+
+The system captures standard HTTP metrics:
+
+\begin{itemize}
+    \item Request latency
+    \item Request count
+\end{itemize}
+
+\subsubsection{Tracing}
+
+OpenTelemetry was integrated with GORM:
+
+\begin{itemize}
+    \item Traces API request lifecycle
+    \item Captures database query execution
+\end{itemize}
+
+Tracing spans represent synchronous execution paths rather than event-driven processing.
+
+\section{Functional Validation}
+
+To validate both implementations, a series of functional scenarios were executed.
+
+\subsection{Subscription Creation}
+
+\begin{itemize}
+    \item A BillingPlan is created
+    \item A Subscription referencing the plan is created
+    \item System initializes state and billing timestamps
+\end{itemize}
+
+Both systems successfully performed initialization, although execution mechanisms differed.
+
+\subsection{Subscription Expiration}
+
+\begin{itemize}
+    \item Time-based conditions trigger expiration
+    \item Kubernetes system handles via reconciliation
+    \item Traditional system handles via background worker
+\end{itemize}
+
+\subsection{Subscription Deletion}
+
+\begin{itemize}
+    \item Kubernetes system executes finalizer logic before deletion
+    \item Traditional system directly deletes record
+\end{itemize}
+
+This demonstrates stronger lifecycle guarantees in the Kubernetes approach.
+
+\section{Implementation Challenges}
+
+Several challenges were encountered during implementation:
+
+\begin{itemize}
+    \item Increased complexity of Kubernetes development environment
+    \item Need for careful CRD schema design
+    \item Debugging asynchronous reconciliation logic
+    \item Managing eventual consistency in controller behavior
+\end{itemize}
+
+In contrast, the traditional system was simpler to implement but required explicit handling of lifecycle events.
+
+\section{Summary}
+
+This chapter presented the implementation of two systems for subscription management using different architectural paradigms. The Kubernetes-based system leverages CRDs and the Operator pattern to implement business logic as a declarative, event-driven process. The traditional system implements the same logic using REST APIs and a relational database. These implementations provide the foundation for the experimental evaluation presented in the next chapter.
