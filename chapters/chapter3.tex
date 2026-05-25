@@ -1,43 +1,194 @@
 \chapter{Methodology}\label{chap:met}
 
-Referencing other chapters~\ref{chap:lr},~\ref{chap:met},~\ref{chap:impl},~\ref{chap:eval} and~\ref{chap:conclusion}
-\begin{longtable}{c|c}
-\caption[This is the title I want to appear in the List of Tables]{Simulation Parameters}\label{table:thisimulation_params} \\
-\hline
-A & B  \\
-\hline
-\endfirsthead
-\multicolumn{2}{@{}l}{} \\
-\hline
-A & B \\
-\hline
-\endhead
-\hline
- \textbf{Parameter} & \textbf{Value}\\
- \hline
- Number of vehicles & $|\mathcal{V}|$\\
- \hline
- Number of RSUs & $|\mathcal{U}|$\\
- \hline
- RSU coverage radius & 150 m\\
- \hline
- V2V communication radius & 30 m\\
- \hline
- Smart vehicle antenna height & 1.5 m\\
- \hline
- RSU antenna height & 25 m\\
- \hline
- Smart vehicle maximum speed & $v_{max}$ m/s\\
- \hline
- Smart vehicle minimum speed & $v_{min}$ m/s\\
- \hline
- Common smart vehicle cache capacities & $[50, 100, 150, 200, 250]$ mb\\
- \hline
- Common RSU cache capacities & $[5000,1000,1500,2000,2500]$ mb\\
- \hline
- Common backhaul rates & $[75, 100, 150]$ mb/s\\
- \hline
-\end{longtable}
+This chapter describes the research methodology, system design, and architectural decisions used to evaluate Kubernetes as a platform for implementing business logic. The chapter expands upon the high-level methodology outlined in Chapter~\ref{chap:lr} and Section~1.5, providing a detailed description of both the Kubernetes-based system and the traditional baseline system.
 
+\section{Research Approach}
 
-\ldots
+This research followed a system design and comparative analysis approach. Two functionally equivalent systems were designed and implemented:
+
+\begin{itemize}
+    \item A Kubernetes-native system based on Custom Resource Definitions (CRDs) and the Operator pattern.
+    \item A traditional backend system based on a REST API and relational database.
+\end{itemize}
+
+Both systems implemented the same business domain logic to ensure comparability. The primary difference lies in how the business logic is modeled, executed, and managed.
+
+The methodology focuses on analyzing:
+\begin{itemize}
+    \item Architectural differences between declarative and imperative approaches.
+    \item Execution models (event-driven reconciliation vs request-response).
+    \item Observability and system introspection capabilities.
+\end{itemize}
+
+\section{Business Domain Modeling}
+
+The selected domain for this research is a billing and subscription management system. This domain was chosen because it includes both stateful entities and time-based business logic, making it suitable for evaluating different architectural paradigms.
+
+\subsection{Core Entities}
+
+The system defines two primary entities:
+
+\begin{itemize}
+    \item \textbf{BillingPlan}: Represents a pricing tier, including attributes such as price, currency, billing period, and usage limits.
+    \item \textbf{Subscription}: Represents a user's subscription to a billing plan, including references to the plan, lifecycle state, and billing timestamps.
+\end{itemize}
+
+\subsection{Business Logic}
+
+The implemented business logic includes:
+
+\begin{itemize}
+    \item \textbf{Activation}: Upon creation of a subscription, the system validates the referenced billing plan, activates the subscription, and initializes billing timestamps.
+    \item \textbf{Billing Cycle Management}: The system tracks last payment and next billing dates.
+    \item \textbf{Expiration Handling}: Subscriptions transition to an expired state when billing conditions are not met.
+    \item \textbf{Final Charge Handling}: Upon deletion, a final billing operation is executed before resource removal.
+\end{itemize}
+
+This logic was implemented identically in both systems but using different architectural approaches.
+
+\section{Traditional System Architecture}
+
+The baseline system follows a conventional monolithic architecture.
+
+\subsection{Technology Stack}
+
+\begin{itemize}
+    \item Programming language: Go
+    \item Web framework: Gorilla Mux
+    \item Database: PostgreSQL 15
+    \item ORM: GORM
+\end{itemize}
+
+\subsection{Architecture Overview}
+
+The system exposes a REST API that allows clients to interact with billing plans and subscriptions. Business logic is implemented within HTTP handlers and database operations.
+
+\subsection{Execution Model}
+
+The system uses a primarily synchronous request-response model:
+
+\begin{itemize}
+    \item Clients send HTTP requests to perform operations.
+    \item The server processes requests and updates the database.
+\end{itemize}
+
+Additionally, an asynchronous background worker periodically checks for expired subscriptions and updates their state accordingly.
+
+\subsection{Data Persistence}
+
+All system state is stored in a relational database. The database acts as the single source of truth, and business logic is tightly coupled with database operations.
+
+\section{Kubernetes-Based System Architecture}
+
+The experimental system is implemented using Kubernetes as a platform for business logic.
+
+\subsection{Custom Resource Definitions}
+
+Two CRDs were defined:
+
+\begin{itemize}
+    \item \texttt{BillingPlan} (\texttt{billingplans.billing.cloud-native.io})
+    \item \texttt{Subscription} (\texttt{subscriptions.billing.cloud-native.io})
+\end{itemize}
+
+These CRDs extend the Kubernetes API, allowing domain entities to be managed as native Kubernetes resources.
+
+\subsection{Operator Implementation}
+
+The system follows the Operator pattern and is implemented using Kubebuilder and controller-runtime.
+
+The core logic resides in the \texttt{SubscriptionReconciler}, which continuously reconciles the desired and actual state of Subscription resources.
+
+\subsection{Reconciliation Logic}
+
+The reconciliation loop implements the following logic:
+
+\begin{itemize}
+    \item Validation of referenced BillingPlan existence.
+    \item Automatic attachment of finalizers for safe deletion.
+    \item Initialization of subscription state upon creation.
+    \item Handling of deletion events with final billing logic.
+    \item Continuous state synchronization.
+\end{itemize}
+
+The reconciliation loop effectively acts as a state machine, continuously driving the system toward the desired state.
+
+\subsection{Execution Model}
+
+Unlike the traditional system, execution is event-driven:
+
+\begin{itemize}
+    \item Changes to resources trigger reconciliation events.
+    \item Controllers asynchronously process these events.
+    \item No direct client-driven execution of business logic is required.
+\end{itemize}
+
+\subsection{Data Persistence}
+
+System state is stored in the Kubernetes control plane (etcd) as custom resources. The state is declarative and versioned, enabling automatic reconciliation and recovery.
+
+\section{Comparison of Architectural Approaches}
+
+The two systems differ fundamentally in how they implement business logic:
+
+\begin{itemize}
+    \item \textbf{Imperative vs Declarative}: The REST system executes explicit commands, while the Kubernetes system declares desired state.
+    \item \textbf{Execution Model}: Request-response vs reconciliation loop.
+    \item \textbf{State Management}: Database records vs Kubernetes resources.
+    \item \textbf{Error Handling}: Explicit error handling vs eventual consistency and retries.
+\end{itemize}
+
+These differences form the basis for the evaluation conducted in later chapters.
+
+\section{Observability Design}
+
+Observability was implemented in both systems to enable analysis of system behavior.
+
+\subsection{Kubernetes System}
+
+The Kubernetes-based system integrates both metrics and tracing:
+
+\begin{itemize}
+    \item \textbf{Metrics (Prometheus)}:
+    \begin{itemize}
+        \item \texttt{billing\_active\_subscriptions}
+        \item \texttt{billing\_revenue\_total}
+        \item \texttt{billing\_payment\_failures}
+    \end{itemize}
+    \item \textbf{Tracing (OpenTelemetry)}:
+    \begin{itemize}
+        \item Tracing of reconciliation events via spans (e.g., \texttt{ReconcileSubscription})
+    \end{itemize}
+\end{itemize}
+
+This setup enables visibility into business-level events rather than only infrastructure metrics.
+
+\subsection{Traditional System}
+
+The traditional system uses:
+
+\begin{itemize}
+    \item Standard HTTP metrics (request latency, request count)
+    \item OpenTelemetry tracing integrated with database operations
+\end{itemize}
+
+Tracing captures the flow from API requests to database interactions.
+
+\section{Experimental Methodology}
+
+Experimental evaluation will be conducted in a controlled local environment using a Kubernetes cluster (Minikube).
+
+The evaluation will focus on:
+
+\begin{itemize}
+    \item Reaction time to state changes
+    \item Throughput under load
+    \item Resource utilization
+    \item Observability coverage
+\end{itemize}
+
+Detailed experimental setup and results are presented in Chapter~\ref{chap:eval}.
+
+\section{Summary}
+
+This chapter described the methodology used to evaluate Kubernetes as a platform for business logic. Two systems implementing identical functionality were designed using different paradigms: a traditional REST-based system and a Kubernetes-native Operator-based system. The architectural differences between these systems provide the foundation for the comparative evaluation presented in subsequent chapters.
