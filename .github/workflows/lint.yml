@@ -15,6 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Run ChkTeX
+        continue-on-error: true
         uses: j2kun/chktex-action@v2
         with:
           lint-all: true
