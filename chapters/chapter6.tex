@@ -1,3 +1,207 @@
 \chapter{Conclusion}\label{chap:conclusion}
 
-\ldots
+This chapter summarizes the research findings, answers the research questions posed in Chapter~\ref{chap:intro}, discusses the contributions and limitations of this work, and suggests directions for future research.
+
+\section{Summary of Research}
+
+This thesis explored the applicability of Kubernetes as a platform for implementing business logic using Custom Resource Definitions (CRDs) and the Operator pattern. Two functionally equivalent billing systems were designed, implemented, and evaluated:
+
+\begin{itemize}
+    \item \textbf{backend-billing}: A traditional Go backend with REST API and PostgreSQL database
+    \item \textbf{kube-billing}: A Kubernetes Operator with CRDs and reconcile-based control loop
+\end{itemize}
+
+Both systems implement identical business logic (billing plan management, subscription lifecycle, recurring billing, expiration handling) but differ fundamentally in architecture, state management, and execution model.
+
+\section{Answers to Research Questions}
+
+\subsection{RQ1: How can business logic be effectively modeled and implemented using Kubernetes CRDs and the Operator pattern?}
+
+\textbf{Answer}: Business logic can be modeled using Kubernetes CRDs by:
+
+\begin{enumerate}
+    \item \textbf{Defining domain entities as CRDs}: BillingPlan and Subscription resources extend the Kubernetes API with domain-specific semantics
+    \item \textbf{Using spec/status separation}: Desired state (spec) is declared by users; actual state (status) is managed by the controller
+    \item \textbf{Implementing reconcile loop}: The Operator continuously compares spec vs status and applies changes to converge toward desired state
+    \item \textbf{Leveraging Kubernetes primitives}: Finalizers for cleanup, Conditions for state reporting, Events for audit trail
+    \item \textbf{Using admission control}: CRD validation markers enforce business rules at API boundary
+\end{enumerate}
+
+The key insight is that business logic becomes a \textit{control problem} rather than a \textit{computation problem}: the Operator acts as an automated control system that maintains system state according to business rules.
+
+\subsection{RQ2: What are the performance characteristics of CRD/Operator-based implementation compared to traditional REST API architectures?}
+
+\textbf{Answer}: The experimental evaluation (Chapter~\ref{chap:eval}) demonstrates significant performance differences:
+
+\begin{table}[h]
+\centering
+\caption{Performance Comparison Summary}
+\small\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Metric} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
+Latency (p50, create subscription) & 10 ms & 100 ms \\
+Throughput (requests/second) & $\sim$1,000 & $\sim$200 \\
+CPU usage (idle) & 10m & 50m \\
+Memory usage (idle) & 50 MB & 150 MB \\
+Startup time & 2s & 10s \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+The traditional backend is \textbf{10--20$\times$ faster} in latency and \textbf{5$\times$ higher} in throughput. The Kubernetes API server and etcd introduce overhead from admission control, distributed consensus, and watch event propagation.
+
+\textbf{Conclusion}: For performance-critical applications, the traditional approach is superior. The Operator pattern trades raw performance for operational benefits.
+
+\subsection{RQ3: What are the operational implications and observability capabilities of using Kubernetes as a business logic platform?}
+
+\textbf{Answer}: The Kubernetes approach provides significant operational advantages:
+
+\begin{itemize}
+    \item \textbf{Automatic scaling}: HorizontalPodAutoscaler adjusts replicas based on CPU/memory utilization
+    \item \textbf{Self-healing}: Failed pods are automatically restarted by Kubernetes
+    \item \textbf{Declarative deployment}: Kustomize/Helm enable version-controlled, reproducible deployments
+    \item \textbf{Built-in observability}:
+    \begin{itemize}
+        \item Kubernetes Events provide audit trail without custom logging
+        \item Conditions (metav1.Condition) standardize state reporting
+        \item Reconciliation metrics expose control loop behavior
+    \end{itemize}
+    \item \textbf{GitOps compatibility}: CRD manifests integrate with ArgoCD/Flux workflows
+\end{itemize}
+
+However, these benefits come with operational complexity:
+\begin{itemize}
+    \item Kubernetes cluster management required
+    \item etcd backup and disaster recovery planning
+    \item RBAC configuration for least-privilege access
+    \item Monitoring of control plane health
+\end{itemize}
+
+\subsection{RQ4: Under what circumstances is the CRD/Operator approach advantageous, and what are its limitations?}
+
+\textbf{Answer}: The CRD/Operator approach is advantageous when:
+
+\begin{itemize}
+    \item \textbf{Application is already on Kubernetes} --- no additional infrastructure investment
+    \item \textbf{High availability is critical} --- self-healing and HPA provide resilience
+    \item \textbf{Business logic is state machine-like} --- reconcile pattern fits naturally
+    \item \textbf{Audit trail is required} --- Kubernetes Events provide compliance logging
+    \item \textbf{GitOps workflow is desired} --- declarative resources enable PR-based changes
+\end{itemize}
+
+The approach is \textbf{not recommended} when:
+
+\begin{itemize}
+    \item \textbf{Performance is the top priority} --- 10--20$\times$ latency overhead
+    \item \textbf{Team lacks Kubernetes expertise} --- steep learning curve
+    \item \textbf{Application must run outside Kubernetes} --- portability limitation
+    \item \textbf{Complex queries are needed} --- Kubernetes API is not designed for ad-hoc queries
+    \item \textbf{Time-to-market is critical} --- slower development cycle
+\end{itemize}
+
+\section{Contributions}
+
+This thesis makes the following contributions:
+
+\begin{enumerate}
+    \item \textbf{Two production-ready implementations}:
+    \begin{itemize}
+        \item backend-billing: Go REST API with PostgreSQL, 86.2\% test coverage, CI/CD pipeline
+        \item kube-billing: Kubernetes Operator with CRDs, HPA, PDB, production manifests
+    \end{itemize}
+    
+    \item \textbf{Systematic architectural comparison}:
+    \begin{itemize}
+        \item Code metrics (LOC, complexity, dependencies, test coverage)
+        \item Performance benchmarks (latency, throughput, resource usage)
+        \item Operational characteristics (scaling, fault tolerance, observability)
+    \end{itemize}
+    
+    \item \textbf{Decision framework}: Criteria for choosing between traditional and Operator approaches based on organizational priorities
+    
+    \item \textbf{Reference implementation}: Open-source codebases serving as templates for similar projects
+\end{enumerate}
+
+\section{Limitations}
+
+Several limitations affect this research:
+
+\begin{itemize}
+    \item \textbf{Local environment}: Experiments conducted on Minikube/Docker Desktop; production clusters may show different characteristics
+    
+    \item \textbf{Simulated payments}: No integration with external payment gateway (Stripe, PayPal); real-world latency and failure modes not captured
+    
+    \item \textbf{Single workload type}: Billing domain may not represent all business logic patterns (e.g., real-time processing, batch jobs)
+    
+    \item \textbf{Short test duration}: No long-term effects (etcd compaction, database bloat, metric cardinality explosion)
+    
+    \item \textbf{Incomplete finalizer logic}: Pro-rated refund calculation not implemented in kube-billing
+    
+    \item \textbf{No multi-tenant testing}: Evaluation focused on single-tenant scenarios; multi-tenant isolation not assessed
+\end{itemize}
+
+\section{Future Work}
+
+Several directions for future research emerge from this work:
+
+\subsection{Technical Improvements}
+
+\begin{itemize}
+    \item \textbf{Payment gateway integration}: Implement Stripe/PayPal integration for realistic payment latency and failure handling
+    
+    \item \textbf{Refund logic}: Complete finalizer implementation with pro-rated refund calculation
+    
+    \item \textbf{Multi-tenant support}: Evaluate namespace-based isolation and resource quotas
+    
+    \item \textbf{Webhook integration}: Add ValidationWebhook and MutationWebhook for advanced admission control
+    
+    \item \textbf{Backup/restore}: Implement etcd backup strategies and disaster recovery procedures
+\end{itemize}
+
+\subsection{Research Extensions}
+
+\begin{itemize}
+    \item \textbf{Alternative domains}: Apply Operator pattern to other business domains (inventory management, order processing, user provisioning)
+    
+    \item \textbf{Hybrid architectures}: Explore combinations (e.g., REST API for user-facing operations, Operator for background processing)
+    
+    \item \textbf{Cost analysis}: Compare cloud infrastructure costs (managed Kubernetes vs managed database + compute)
+    
+    \item \textbf{Developer productivity}: Measure development velocity, onboarding time, and maintenance effort
+    
+    \item \textbf{Security analysis}: Evaluate RBAC configurations, secret management, and network policy effectiveness
+\end{itemize}
+
+\subsection{Production Deployment}
+
+\begin{itemize}
+    \item \textbf{Helm chart}: Package kube-billing as a Helm chart for easier deployment
+    
+    \item \textbf{Operator Lifecycle Manager}: Publish to OperatorHub for community distribution
+    
+    \item \textbf{Performance tuning}: Optimize etcd configuration, reconcile concurrency, and cache settings
+    
+    \item \textbf{Monitoring dashboards}: Create Grafana dashboards for business metrics visualization
+\end{itemize}
+
+\section{Final Remarks}
+
+This thesis has demonstrated that Kubernetes can serve as a platform for business logic implementation through CRDs and the Operator pattern. The approach is technically feasible and provides operational benefits (automatic scaling, self-healing, built-in observability) but comes with significant performance overhead (10--20$\times$ latency, 5$\times$ lower throughput) and development complexity.
+
+The choice between traditional and Operator-based architectures is not binary but contextual. Organizations should evaluate their specific requirements:
+
+\begin{itemize}
+    \item If \textbf{performance, simplicity, and portability} are priorities $\rightarrow$ traditional backend
+    \item If \textbf{operational automation, GitOps, and cloud-native integration} are priorities $\rightarrow$ Kubernetes Operator
+\end{itemize}
+
+The research contributes empirical evidence to the cloud-native architecture discourse, moving beyond anecdotal claims to data-driven decision making. Both approaches have merit; the optimal choice depends on organizational context, team expertise, and business requirements.
+
+\section{Publications and Artifacts}
+
+The following artifacts are available as open-source:
+
+\begin{itemize}
+    \item \textbf{backend-billing}: \url{https://github.com/cuprum-acid/backend-billing}
+    \item \textbf{kube-billing}: \url{https://github.com/cuprum-acid/kube-billing}
+    \item \textbf{Thesis source}: \url{https://github.com/cuprum-acid/thesis}
+\end{itemize}

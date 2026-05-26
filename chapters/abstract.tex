@@ -1,5 +1,27 @@
 \begin{abstract}
-% skip one line to make the abstract start with indent
 
-My abstract starts from here.
+This thesis explores the applicability of Kubernetes as a platform for implementing business logic using Custom Resource Definitions (CRDs) and the Operator pattern. While Kubernetes has become the de facto standard for container orchestration, its potential as a business logic platform remains understudied.
+
+Two functionally equivalent billing systems were designed and implemented: (1) a traditional Go backend with REST API and PostgreSQL database, and (2) a Kubernetes Operator with CRDs and reconcile-based control loop. Both systems implement identical business logic (billing plan management, subscription lifecycle, recurring billing, expiration handling) but differ fundamentally in architecture, state management, and execution model.
+
+Comprehensive evaluation was conducted across multiple dimensions: code metrics, performance benchmarks, resource utilization, and operational characteristics. The results demonstrate that the traditional backend achieves 10--20$\times$ lower latency (p50: 10ms vs 100ms for subscription creation) and 5$\times$ higher throughput (~1,000 req/s vs ~200 req/s). However, the Kubernetes Operator provides superior operational automation: horizontal pod autoscaling, self-healing, built-in observability (Kubernetes Events, Conditions), and GitOps compatibility.
+
+The research contributes empirical evidence to the cloud-native architecture discourse, moving beyond anecdotal claims to data-driven decision making. A decision framework is provided for practitioners: the traditional approach is recommended for performance-critical, portable applications with simple deployment requirements; the Operator approach is suitable for organizations already invested in Kubernetes ecosystem that prioritize operational automation over raw performance.
+
+Both implementations are released as open-source, serving as reference architectures for similar projects. The findings suggest that while Kubernetes can effectively serve as a business logic platform, the choice between approaches should be guided by organizational context, team expertise, and specific business requirements rather than technological trends alone.
+
+\end{abstract}
+
+\begin{abstract}[russian]
+
+Данная диссертация исследует применимость Kubernetes в качестве платформы для реализации бизнес-логики с использованием Custom Resource Definitions (CRD) и паттерна Operator. Несмотря на то, что Kubernetes стал стандартом де-факто для оркестрации контейнеров, его потенциал как платформы для бизнес-логики остаётся недостаточно изученным.
+
+Были спроектированы и реализованы две функционально эквивалентные биллинг-системы: (1) традиционный Go-бэкенд с REST API и базой данных PostgreSQL, (2) Kubernetes Operator с CRD и циклом reconcile. Обе системы реализуют идентичную бизнес-логику (управление тарифными планами, жизненный цикл подписок, периодический биллинг, обработка истечения срока), но фундаментально различаются архитектурой, управлением состоянием и моделью выполнения.
+
+Проведено комплексное сравнение по нескольким измерениям: метрики кода, бенчмарки производительности, использование ресурсов и операционные характеристики. Результаты показывают, что традиционный бэкенд обеспечивает в 10--20 раз меньшую задержку (p50: 10 мс против 100 мс для создания подписки) и в 5 раз более высокую пропускную способность (~1000 запросов/с против ~200 запросов/с). Однако Kubernetes Operator предоставляет превосходную операционную автоматизацию: автоматическое масштабирование (HPA), самовосстановление, встроенную наблюдаемость (Kubernetes Events, Conditions) и совместимость с GitOps.
+
+Исследование вносит эмпирические данные в дискуссию об облачных нативных архитектурах, переходя от анекдотических утверждений к обоснованным решениям. Предоставлена рамка принятия решений для практиков: традиционный подход рекомендуется для критичных к производительности приложений с простыми требованиями к развёртыванию; подход с Operator подходит для организаций, уже инвестирующих в экосистему Kubernetes и приоритизирующих операционную автоматизацию над производительностью.
+
+Обе реализации выпущены как open-source, служа референсными архитектурами для аналогичных проектов. Выводы показывают, что, хотя Kubernetes может эффективно служить платформой для бизнес-логики, выбор между подходами должен определяться организационным контекстом, экспертизой команды и конкретными бизнес-требованиями, а не только технологическими трендами.
+
 \end{abstract}

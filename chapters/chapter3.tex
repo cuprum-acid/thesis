@@ -48,147 +48,556 @@ This logic was implemented identically in both systems but using different archi
 
 \section{Traditional System Architecture}
 
-The baseline system follows a conventional monolithic architecture.
+The baseline system follows a conventional monolithic architecture implemented in Go.
 
 \subsection{Technology Stack}
 
 \begin{itemize}
-    \item Programming language: Go
-    \item Web framework: Gorilla Mux
-    \item Database: PostgreSQL 15
-    \item ORM: GORM
+    \item \textbf{Programming language}: Go 1.25
+    \item \textbf{HTTP framework}: Gorilla Mux (lightweight router with middleware support)
+    \item \textbf{Database}: PostgreSQL 15 (relational database with ACID guarantees)
+    \item \textbf{ORM}: GORM v2 (Go ORM with automatic migration support)
+    \item \textbf{Configuration}: Viper (environment variables + YAML files)
+    \item \textbf{Validation}: go-playground/validator v10
+    \item \textbf{Observability}: OpenTelemetry SDK + Prometheus client\_golang
+    \item \textbf{Rate Limiting}: Token bucket algorithm (10 req/s, burst 20)
 \end{itemize}
 
 \subsection{Architecture Overview}
 
-The system exposes a REST API that allows clients to interact with billing plans and subscriptions. Business logic is implemented within HTTP handlers and database operations.
+The system implements a layered architecture with clear separation of concerns:
+
+\begin{itemize}
+    \item \textbf{Handlers layer}: HTTP request processing and response formatting
+    \item \textbf{Repository layer}: Database operations through GORM interfaces
+    \item \textbf{Models layer}: GORM entities (BillingPlan, Subscription)
+    \item \textbf{Workers layer}: Background subscription expiration checker
+    \item \textbf{Middleware layer}: Rate limiting, panic recovery, tracing
+\end{itemize}
+
+The REST API exposes endpoints for billing plans and subscriptions. Business logic is implemented within HTTP handlers and repository methods, with explicit error handling and validation.
 
 \subsection{Execution Model}
 
-The system uses a primarily synchronous request-response model:
+The system uses a synchronous request-response model with asynchronous background processing:
 
 \begin{itemize}
-    \item Clients send HTTP requests to perform operations.
-    \item The server processes requests and updates the database.
+    \item \textbf{Synchronous path}: Clients send HTTP requests $\rightarrow$ handlers validate input $\rightarrow$ repository executes database operations $\rightarrow$ response returned
+    \item \textbf{Asynchronous path}: Background worker runs every 30 seconds, queries PostgreSQL for expired subscriptions, updates state to \texttt{Expired}
 \end{itemize}
 
-Additionally, an asynchronous background worker periodically checks for expired subscriptions and updates their state accordingly.
+The background worker implements time-based business logic that cannot be handled synchronously:
+
+\begin{lstlisting}[language=Go, caption={Background expiration checker worker}, label={lst:worker}]
+// Worker runs every 30 seconds
+ticker := time.NewTicker(30 * time.Second)
+for range ticker.C {
+    expiredSubs := repo.FindExpired(time.Now())
+    for _, sub := range expiredSubs {
+        sub.State = "Expired"
+        repo.Update(sub)
+    }
+}
+\end{lstlisting}
 
 \subsection{Data Persistence}
 
-All system state is stored in a relational database. The database acts as the single source of truth, and business logic is tightly coupled with database operations.
+All system state is stored in PostgreSQL with the following schema:
+
+\begin{itemize}
+    \item \textbf{BillingPlan table}: id (PK), name (unique), price (string for precision), currency, billing\_period, created\_at, updated\_at, deleted\_at (soft delete)
+    \item \textbf{Subscription table}: id (PK), user\_id, plan\_ref (FK to BillingPlan.name), state (Active/Cancelled/Expired), last\_payment, next\_billing, created\_at, updated\_at, deleted\_at
+\end{itemize}
+
+GORM auto-migration ensures schema synchronization on application startup. The database serves as the single source of truth, with business logic tightly coupled to database operations through the repository pattern.
+
+\subsection{API Endpoints}
+
+\begin{itemize}
+    \item \texttt{GET /plans} --- List all billing plans
+    \item \texttt{POST /plans} --- Create billing plan (validates name, price, currency)
+    \item \texttt{GET /subscriptions} --- List all subscriptions
+    \item \texttt{GET /subscriptions/\{id\}} --- Get subscription by ID
+    \item \texttt{POST /subscriptions} --- Create subscription (auto-activates)
+    \item \texttt{POST /subscriptions/\{id\}/cancel} --- Cancel active subscription
+    \item \texttt{GET /health} --- Health check endpoint
+    \item \texttt{GET /ready} --- Readiness check (includes database connectivity)
+    \item \texttt{GET /metrics} --- Prometheus metrics endpoint
+\end{itemize}
 
 \section{Kubernetes-Based System Architecture}
 
-The experimental system is implemented using Kubernetes as a platform for business logic.
+The experimental system is implemented using Kubernetes as a platform for business logic through Custom Resource Definitions and the Operator pattern.
+
+\subsection{Technology Stack}
+
+\begin{itemize}
+    \item \textbf{Programming language}: Go 1.25.3
+    \item \textbf{Operator Framework}: Kubebuilder v4.13.0 + controller-runtime v0.23.1
+    \item \textbf{CRD API Group}: \texttt{billing.cloud-native.io/v1alpha1}
+    \item \textbf{Metrics}: Prometheus client\_golang v1.23.1
+    \item \textbf{Tracing}: OpenTelemetry SDK (OTLP over HTTP, port 4318)
+    \item \textbf{Testing}: Ginkgo v2 + Gomega + envtest (local API server)
+    \item \textbf{E2E Testing}: Kind (Kubernetes in Docker)
+\end{itemize}
 
 \subsection{Custom Resource Definitions}
 
-Two CRDs were defined:
+Two CRDs were defined to extend the Kubernetes API:
 
 \begin{itemize}
-    \item \texttt{BillingPlan} (\texttt{billingplans.billing.cloud-native.io})
-    \item \texttt{Subscription} (\texttt{subscriptions.billing.cloud-native.io})
+    \item \texttt{BillingPlan} (\texttt{billingplans.billing.cloud-native.io}) --- defines pricing configuration
+    \item \texttt{Subscription} (\texttt{subscriptions.billing.cloud-native.io}) --- represents user subscription
 \end{itemize}
 
-These CRDs extend the Kubernetes API, allowing domain entities to be managed as native Kubernetes resources.
+\subsubsection{BillingPlan Specification}
 
-\subsection{Operator Implementation}
-
-The system follows the Operator pattern and is implemented using Kubebuilder and controller-runtime.
-
-The core logic resides in the \texttt{SubscriptionReconciler}, which continuously reconciles the desired and actual state of Subscription resources.
-
-\subsection{Reconciliation Logic}
-
-The reconciliation loop implements the following logic:
+The \texttt{BillingPlan} CRD includes comprehensive validation:
 
 \begin{itemize}
-    \item Validation of referenced BillingPlan existence.
-    \item Automatic attachment of finalizers for safe deletion.
-    \item Initialization of subscription state upon creation.
-    \item Handling of deletion events with final billing logic.
-    \item Continuous state synchronization.
+    \item \texttt{spec.price} (string, required): Pattern \texttt{\textasciicircum{}\textbackslash d+(\textbackslash.\textbackslash d\{1,2\})?\$}, min length 1, max length 20 --- ensures decimal with up to 2 decimal places
+    \item \texttt{spec.currency} (string, required): Enum (USD, EUR, RUB, KZT, GBP, JPY, CNY)
+    \item \texttt{spec.billingPeriod} (string, required): Enum (hourly, daily, weekly, monthly, yearly)
+    \item \texttt{spec.requeueIntervalSeconds} (integer, optional): Range 1--31536000 (1 year), default 30 --- controls reconciliation frequency
+    \item \texttt{spec.limits} (map, optional): Key-value pairs for usage constraints (e.g., \texttt{apiCalls: 10000})
 \end{itemize}
 
-The reconciliation loop effectively acts as a state machine, continuously driving the system toward the desired state.
+\textbf{Status subresource} (managed by controller):
+\begin{itemize}
+    \item \texttt{status.activeSubscriptions} (integer): Count of active subscriptions referencing this plan
+    \item \texttt{status.totalRevenue} (string): Cumulative revenue from all subscriptions
+    \item \texttt{status.conditions} (array): Standard Kubernetes conditions (\texttt{Available}, etc.)
+\end{itemize}
+
+\subsubsection{Subscription Specification}
+
+The \texttt{Subscription} CRD enforces strict validation:
+
+\begin{itemize}
+    \item \texttt{spec.userId} (string, required): Pattern \texttt{\textasciicircum{}[a-zA-Z0-9\_-]+\$}, max length 256 --- alphanumeric with underscores and hyphens
+    \item \texttt{spec.planRef} (string, required): Pattern \texttt{\textasciicircum{}[a-z0-9]([-a-z0-9]*[a-z0-9])?\$}, max length 253 --- Kubernetes naming convention
+\end{itemize}
+
+\textbf{Status subresource} (managed by controller):
+\begin{itemize}
+    \item \texttt{status.state} (string): Enum (Active, PaymentError, Error)
+    \item \texttt{status.lastPayment} (timestamp): Time of last successful billing
+    \item \texttt{status.nextBilling} (timestamp): Scheduled time for next billing cycle
+    \item \texttt{status.observedGeneration} (integer): Tracks status freshness against spec
+    \item \texttt{status.conditions} (array): Standard conditions (\texttt{Active}, \texttt{BillingPlanNotFound}, \texttt{PaymentError})
+\end{itemize}
+
+\subsection{Operator Controller Implementation}
+
+The core business logic resides in the \texttt{SubscriptionReconciler}, implemented using controller-runtime. The reconciler continuously processes Subscription resources and ensures correct system state.
+
+\subsubsection{Reconciliation Workflow}
+
+The reconciliation logic follows a deterministic 6-step sequence:
+
+\begin{enumerate}
+    \item \textbf{Fetch Subscription}: Retrieve the Subscription resource from the API server
+    \item \textbf{Handle Deletion}: If \texttt{DeletionTimestamp.IsZero() == false}:
+    \begin{itemize}
+        \item Execute final billing (pro-rated refund calculation --- TODO in current implementation)
+        \item Remove finalizer \texttt{billing.cloud-native.io/finalizer}
+        \item Return, allowing Kubernetes to complete deletion
+    \end{itemize}
+    \item \textbf{Add Finalizer}: If finalizer absent, attach it to prevent premature deletion
+    \item \textbf{Validate BillingPlan}: Query for referenced BillingPlan by \texttt{planRef}:
+    \begin{itemize}
+        \item If not found: Set \texttt{State = Error}, \texttt{BillingPlanNotFound = True}, requeue after 60 seconds
+        \item Emit Kubernetes Event: \texttt{Warning BillingPlanNotFound}
+    \end{itemize}
+    \item \textbf{Initialize Subscription}: If \texttt{State == ""} (new subscription):
+    \begin{itemize}
+        \item Set \texttt{State = Active}
+        \item Increment Prometheus metric \texttt{billing\_active\_subscriptions}
+        \item Set \texttt{LastPayment = now}, \texttt{NextBilling = now + RequeueIntervalSeconds}
+        \item Set conditions: \texttt{Active = True}, \texttt{BillingPlanNotFound = False}, \texttt{PaymentError = False}
+        \item Emit Event: \texttt{Normal SubscriptionActivated}
+    \end{itemize}
+    \item \textbf{Process Billing Cycle}: If \texttt{State == Active} and \texttt{now > NextBilling}:
+    \begin{itemize}
+        \item Increment Prometheus metric \texttt{billing\_revenue\_total} by plan price
+        \item Update \texttt{LastPayment = now}, \texttt{NextBilling = now + RequeueIntervalSeconds}
+        \item Emit Event: \texttt{Normal PaymentProcessed}
+        \item \textbf{RequeueAfter}: \texttt{RequeueIntervalSeconds} from BillingPlan.spec
+    \end{itemize}
+\end{enumerate}
+
+\subsubsection{Watches and Event Sources}
+
+The controller watches multiple event sources:
+
+\begin{itemize}
+    \item \textbf{Primary}: \texttt{Subscription} resources (create, update, delete events)
+    \item \textbf{Secondary}: \texttt{BillingPlan} resources via \texttt{mapPlanToSubscriptions} function --- triggers reconciliation of all Subscriptions referencing a changed Plan
+\end{itemize}
+
+This watch pattern enables automatic propagation of plan changes (e.g., price updates) to all affected subscriptions.
+
+\subsubsection{Finalizer Handling}
+
+A Kubernetes finalizer (\texttt{billing.cloud-native.io/finalizer}) ensures safe deletion:
+
+\begin{itemize}
+    \item When user executes \texttt{kubectl delete subscription sub-user1}, Kubernetes sets \texttt{DeletionTimestamp} but does not remove the resource
+    \item Reconciler detects deletion timestamp, executes final billing logic
+    \item After finalizer removal, Kubernetes completes resource deletion
+\end{itemize}
+
+This mechanism guarantees cleanup logic execution even if the controller crashes during processing.
 
 \subsection{Execution Model}
 
-Unlike the traditional system, execution is event-driven:
+Unlike the traditional system, execution is event-driven and declarative:
 
 \begin{itemize}
-    \item Changes to resources trigger reconciliation events.
-    \item Controllers asynchronously process these events.
-    \item No direct client-driven execution of business logic is required.
+    \item \textbf{Declarative}: User declares desired state in YAML (\texttt{spec}), controller drives actual state (\texttt{status})
+    \item \textbf{Event-driven}: Resource changes trigger reconciliation events via Kubernetes watch API
+    \item \textbf{Asynchronous}: Controllers process events concurrently with configurable worker count (default: 1)
+    \item \textbf{Eventually consistent}: System converges toward desired state through repeated reconciliation
 \end{itemize}
+
+No direct client-driven execution of business logic occurs --- the controller autonomously manages state transitions.
 
 \subsection{Data Persistence}
 
-System state is stored in the Kubernetes control plane (etcd) as custom resources. The state is declarative and versioned, enabling automatic reconciliation and recovery.
+System state is stored in the Kubernetes control plane (\texttt{etcd}) as custom resources:
+
+\begin{itemize}
+    \item \textbf{etcd}: Distributed key-value store (backing Kubernetes API server)
+    \item \textbf{CRD instances}: YAML resources persisted with full versioning and metadata
+    \item \textbf{Status subresource}: Separate update path for controller-managed state (optimizes write conflicts)
+\end{itemize}
+
+The declarative state model enables automatic recovery: if the controller crashes, it reconstructs state from etcd on restart and resumes reconciliation.
+
+\subsection{Observability Integration}
+
+\subsubsection{Prometheus Metrics}
+
+Three custom business metrics are exposed at \texttt{:8080/metrics}:
+
+\begin{itemize}
+    \item \texttt{billing\_active\_subscriptions} (Gauge): Current count of Active subscriptions
+    \item \texttt{billing\_revenue\_total} (Counter): Cumulative revenue processed (sum of all successful billing cycles)
+    \item \texttt{billing\_payment\_failures} (Counter): Number of failed payment attempts (defined but not incremented in current implementation)
+\end{itemize}
+
+Additionally, controller-runtime exposes standard metrics:
+\begin{itemize}
+    \item \texttt{controller\_runtime\_reconcile\_total} (Counter): Total reconciliation attempts by result (success, error, requeue)
+    \item \texttt{controller\_runtime\_reconcile\_errors\_total} (Counter): Total reconciliation errors
+\end{itemize}
+
+\subsubsection{OpenTelemetry Tracing}
+
+Distributed tracing captures asynchronous reconciliation flow:
+
+\begin{itemize}
+    \item \textbf{Root span}: \texttt{ReconcileSubscription} --- covers entire reconciliation cycle
+    \item \textbf{Child span}: \texttt{ProcessPayment} --- billing logic execution
+    \item \textbf{Mapped span}: \texttt{MapPlanToSubscriptions} --- triggered by BillingPlan watch events
+\end{itemize}
+
+Traces are exported via OTLP over HTTP to \texttt{localhost:4318} (Jaeger-compatible).
+
+\subsubsection{Kubernetes Events}
+
+The controller emits audit events for significant state changes:
+
+\begin{itemize}
+    \item \texttt{Normal SubscriptionActivated}: Subscription successfully activated
+    \item \texttt{Normal PaymentProcessed}: Billing cycle completed
+    \item \texttt{Warning PaymentFailed}: Payment processing failed
+    \item \texttt{Normal FinalBilling}: Final billing executed on deletion
+\end{itemize}
+
+Events are accessible via \texttt{kubectl get events --field-selector involvedObject.name=sub-user1}.
+
+\subsection{Deployment Configuration}
+
+The system is deployed using production-ready Kubernetes manifests:
+
+\begin{itemize}
+    \item \textbf{HorizontalPodAutoscaler (HPA)}: Min 1, Max 5 replicas, CPU target 80\%, Memory target 80\%
+    \item \textbf{PodDisruptionBudget (PDB)}: Min available 1 --- ensures availability during voluntary disruptions
+    \item \textbf{Resource limits}: CPU 100m--500m, Memory 128Mi--256Mi
+    \item \textbf{NetworkPolicy}: Restricts \texttt{/metrics} endpoint access to Prometheus namespace
+    \item \textbf{RBAC}: ServiceAccount with minimal permissions (get, list, watch Subscriptions and BillingPlans)
+\end{itemize}
+
+Deployment is managed via Kustomize overlays (\texttt{config/default}) combining CRDs, RBAC, controller Deployment, and monitoring configuration.
 
 \section{Comparison of Architectural Approaches}
 
-The two systems differ fundamentally in how they implement business logic:
+The two systems differ fundamentally in how they implement business logic. Table~\ref{tab:arch-comparison} summarizes the key architectural differences.
 
+\begin{table}[h]
+\centering
+\small
+\caption{Architectural Comparison: Traditional Backend vs Kubernetes Operator}
+\label{tab:arch-comparison}
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Aspect} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
+State storage & PostgreSQL (external) & etcd via CRD (control plane) \\
+API style & REST HTTP (port 8080) & Kubernetes API (kubectl) \\
+Execution model & Request-response + background worker & Reconcile loop + RequeueAfter \\
+Scaling & Manual (Docker Compose) & HPA (automatic, 1--5 replicas) \\
+Fault tolerance & Depends on DB + orchestrator & Kubernetes self-healing \\
+Validation & Runtime (go-playground/validator) & Admission time (CRD schema) \\
+Error handling & Explicit (error returns) & Eventual consistency + retries \\
+Observability & HTTP metrics + DB tracing & Business metrics + Events + Conditions \\
+Deployment & Docker container & Kubernetes Deployment + HPA + PDB \\
+Configuration & Environment variables + YAML & ConfigMap + Secrets \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{State Management}
+
+\textbf{backend-billing} stores state in PostgreSQL, an external relational database. This approach provides:
 \begin{itemize}
-    \item \textbf{Imperative vs Declarative}: The REST system executes explicit commands, while the Kubernetes system declares desired state.
-    \item \textbf{Execution Model}: Request-response vs reconciliation loop.
-    \item \textbf{State Management}: Database records vs Kubernetes resources.
-    \item \textbf{Error Handling}: Explicit error handling vs eventual consistency and retries.
+    \item Strong ACID guarantees for transactions
+    \item Mature query capabilities (JOINs, aggregations, indexes)
+    \item Separation of application and data layers
 \end{itemize}
 
-These differences form the basis for the evaluation conducted in later chapters.
+\textbf{kube-billing} stores state in etcd via Custom Resources. This approach provides:
+\begin{itemize}
+    \item Declarative state management (spec vs status separation)
+    \item Built-in versioning and metadata (generation, resourceVersion)
+    \item Automatic persistence through Kubernetes control plane
+\end{itemize}
+
+\subsection{Execution Flow}
+
+\textbf{backend-billing} follows imperative execution:
+\begin{lstlisting}[language=bash, caption={Traditional REST API request flow}, label={lst:rest-flow}]
+POST /subscriptions → validate → INSERT → 201 Created
+\end{lstlisting}
+
+\textbf{kube-billing} follows declarative reconciliation:
+\begin{lstlisting}[language=bash, caption={Kubernetes Operator reconciliation flow}, label={lst:k8s-flow}]
+kubectl apply -f sub.yaml → etcd write → watch event → Reconcile() → status update
+\end{lstlisting}
+
+\subsection{Time-Based Logic}
+
+\textbf{backend-billing} uses a ticker-based worker:
+\begin{itemize}
+    \item Fixed interval (30 seconds)
+    \item Polls database for expired subscriptions
+    \item Updates state synchronously within worker goroutine
+\end{itemize}
+
+\textbf{kube-billing} uses RequeueAfter:
+\begin{itemize}
+    \item Dynamic interval from BillingPlan.spec.requeueIntervalSeconds
+    \item Controller-runtime schedules next reconciliation
+    \item No polling --- event-driven wake-up
+\end{itemize}
+
+\subsection{Lifecycle Management}
+
+\textbf{backend-billing} deletes immediately:
+\begin{itemize}
+    \item \texttt{DELETE /subscriptions/\{id\}} → soft delete (deleted\_at timestamp)
+    \item No cleanup hook execution guarantee
+\end{itemize}
+
+\textbf{kube-billing} uses finalizers:
+\begin{itemize}
+    \item \texttt{kubectl delete} → DeletionTimestamp set → finalizer blocks deletion
+    \item Reconciler executes final billing → removes finalizer → Kubernetes deletes
+    \item Guaranteed cleanup even on controller failure
+\end{itemize}
 
 \section{Observability Design}
 
-Observability was implemented in both systems to enable analysis of system behavior.
+Observability was implemented in both systems to enable comparative analysis of system behavior, with emphasis on business-level events rather than only infrastructure metrics.
 
-\subsection{Kubernetes System}
+\subsection{Kubernetes System Observability}
 
-The Kubernetes-based system integrates both metrics and tracing:
+The Kubernetes-based system integrates three observability layers:
 
+\subsubsection{Prometheus Metrics}
+
+Custom business metrics exposed at \texttt{:8080/metrics}:
 \begin{itemize}
-    \item \textbf{Metrics (Prometheus)}:
-    \begin{itemize}
-        \item \texttt{billing\_active\_subscriptions}
-        \item \texttt{billing\_revenue\_total}
-        \item \texttt{billing\_payment\_failures}
-    \end{itemize}
-    \item \textbf{Tracing (OpenTelemetry)}:
-    \begin{itemize}
-        \item Tracing of reconciliation events via spans (e.g., \texttt{ReconcileSubscription})
-    \end{itemize}
+    \item \texttt{billing\_active\_subscriptions} (Gauge) --- current count of Active subscriptions
+    \item \texttt{billing\_revenue\_total} (Counter) --- cumulative revenue from successful billing cycles
+    \item \texttt{billing\_payment\_failures} (Counter) --- failed payment attempts (defined, not incremented)
 \end{itemize}
 
-This setup enables visibility into business-level events rather than only infrastructure metrics.
-
-\subsection{Traditional System}
-
-The traditional system uses:
-
+Standard controller-runtime metrics:
 \begin{itemize}
-    \item Standard HTTP metrics (request latency, request count)
-    \item OpenTelemetry tracing integrated with database operations
+    \item \texttt{controller\_runtime\_reconcile\_total} --- reconciliation attempts by result
+    \item \texttt{controller\_runtime\_reconcile\_errors\_total} --- error count
+    \item \texttt{workqueue\_depth} --- pending work items
+    \item \texttt{process\_cpu\_seconds}, \texttt{go\_memstats\_alloc\_bytes} --- runtime metrics
 \end{itemize}
 
-Tracing captures the flow from API requests to database interactions.
+\subsubsection{OpenTelemetry Tracing}
+
+Span hierarchy for reconciliation:
+\begin{itemize}
+    \item \texttt{ReconcileSubscription} (root) --- entire reconciliation cycle
+    \item \texttt{ProcessPayment} (child) --- billing logic execution
+    \item \texttt{MapPlanToSubscriptions} (child) --- triggered by BillingPlan watch
+\end{itemize}
+
+Export: OTLP over HTTP to \texttt{localhost:4318} (Jaeger-compatible).
+
+\subsubsection{Kubernetes Events}
+
+Audit trail via Events API:
+\begin{itemize}
+    \item \texttt{Normal SubscriptionActivated} --- new subscription activated
+    \item \texttt{Normal PaymentProcessed} --- billing cycle completed
+    \item \texttt{Warning PaymentFailed} --- payment error
+    \item \texttt{Normal FinalBilling} --- final billing on deletion
+\end{itemize}
+
+\subsection{Traditional System Observability}
+
+The traditional system implements two-layer observability:
+
+\subsubsection{Prometheus Metrics}
+
+HTTP and business metrics at \texttt{/metrics}:
+\begin{itemize}
+    \item \texttt{billing\_subscriptions\_created\_total} (Counter)
+    \item \texttt{billing\_subscriptions\_cancelled\_total} (Counter)
+    \item \texttt{http\_request\_duration\_seconds} (Histogram) --- request latency
+    \item \texttt{http\_requests\_total} (Counter) --- request count by method/path
+\end{itemize}
+
+\subsubsection{OpenTelemetry Tracing}
+
+Integrated tracing for HTTP and database layers:
+\begin{itemize}
+    \item HTTP middleware (\texttt{otelmux}) --- traces request lifecycle
+    \item GORM plugin --- traces SQL queries (duration, statement, rows affected)
+\end{itemize}
+
+Export: OTLP over HTTP to Jaeger (\texttt{http://jaeger:4318}).
+
+\subsection{Comparative Analysis}
+
+The Kubernetes system provides richer business-level observability:
+\begin{itemize}
+    \item \textbf{Events} --- audit trail without custom logging
+    \item \textbf{Conditions} --- standardized state reporting in resource status
+    \item \textbf{Reconciliation metrics} --- visibility into control loop behavior
+\end{itemize}
+
+The traditional system provides simpler but more direct observability:
+\begin{itemize}
+    \item \textbf{HTTP metrics} --- immediate request/response visibility
+    \item \textbf{Database tracing} --- direct query-level insights
+\end{itemize}
 
 \section{Experimental Methodology}
 
-Experimental evaluation will be conducted in a controlled local environment using a Kubernetes cluster (Minikube).
+Experimental evaluation was conducted in a controlled local environment to compare the two architectural approaches across multiple dimensions.
 
-The evaluation will focus on:
+\subsection{Evaluation Environment}
 
+Both systems were deployed and tested on identical hardware:
 \begin{itemize}
-    \item Reaction time to state changes
-    \item Throughput under load
-    \item Resource utilization
-    \item Observability coverage
+    \item \textbf{CPU}: Apple M4 (single-core performance isolated for benchmarks)
+    \item \textbf{RAM}: 16GB unified memory
+    \item \textbf{OS}: macOS (Darwin kernel)
+    \item \textbf{Kubernetes}: Minikube v1.33.1 (for kube-billing)
+    \item \textbf{Docker}: Docker Desktop v27.5.0 (for backend-billing)
 \end{itemize}
 
-Detailed experimental setup and results are presented in Chapter~\ref{chap:eval}.
+\subsection{Evaluation Metrics}
+
+The evaluation focuses on four categories:
+
+\subsubsection{Code Metrics (Lean Software Development)}
+
+\begin{itemize}
+    \item \textbf{Lines of Code (LOC)} --- total Go source lines (excluding tests)
+    \item \textbf{File count} --- number of Go source files
+    \item \textbf{Cyclomatic complexity} --- maximum complexity per function
+    \item \textbf{Test coverage} --- percentage of code covered by automated tests
+    \item \textbf{Dependencies} --- number of Go module dependencies
+\end{itemize}
+
+\subsubsection{Performance Metrics}
+
+\begin{itemize}
+    \item \textbf{Latency} --- p50, p95, p99 response times for CRUD operations
+    \item \textbf{Throughput} --- requests per second under load
+    \item \textbf{Resource usage} --- CPU (millicores) and memory (MB) consumption
+    \item \textbf{Startup time} --- time from launch to readiness
+\end{itemize}
+
+\subsubsection{Operational Metrics}
+
+\begin{itemize}
+    \item \textbf{Scaling} --- manual vs automatic (HPA)
+    \item \textbf{Fault tolerance} --- recovery from controller/database failure
+    \item \textbf{Deployment complexity} --- number of configuration files, steps
+\end{itemize}
+
+\subsubsection{Observability Coverage}
+
+\begin{itemize}
+    \item \textbf{Metrics count} --- number of custom business metrics
+    \item \textbf{Trace coverage} --- percentage of code paths traced
+    \item \textbf{Event/audit trail} --- presence of audit logging
+\end{itemize}
+
+\subsection{Benchmark Methodology}
+
+\subsubsection{Load Testing}
+
+\textbf{backend-billing}:
+\begin{lstlisting}[language=bash, caption={Load testing commands for backend-billing}, label={lst:load-backend}]
+hey -n 1000 -c 10 http://localhost:8080/plans
+hey -n 1000 -c 50 http://localhost:8080/subscriptions
+\end{lstlisting}
+
+\textbf{kube-billing}:
+\begin{lstlisting}[language=bash, caption={Load testing commands for kube-billing}, label={lst:load-kube}]
+for i in {1..1000}; do kubectl apply -f plan.yaml; done
+kubectl apply -f subscription.yaml (sequential, rate-limited)
+\end{lstlisting}
+
+\subsubsection{Resource Monitoring}
+
+\begin{itemize}
+    \item \textbf{backend-billing}: \texttt{docker stats}, Go \texttt{pprof}
+    \item \textbf{kube-billing}: \texttt{kubectl top pods}, Prometheus metrics
+\end{itemize}
+
+\subsubsection{Microbenchmarks}
+
+Go testing package for isolated function benchmarks:
+\begin{lstlisting}[language=bash, caption={Go microbenchmark commands}, label={lst:bench}]
+go test -bench=BenchmarkCreatePlan -benchmem
+go test -bench=BenchmarkValidatePlan -benchmem
+\end{lstlisting}
+
+\subsection{Threats to Validity}
+
+Several limitations affect the generalizability of results:
+
+\begin{itemize}
+    \item \textbf{Local environment} --- results may differ in production Kubernetes clusters with network latency and resource contention
+    \item \textbf{Single-node testing} --- no distributed system effects (network partitions, leader election)
+    \item \textbf{Simulated payments} --- no external payment gateway integration (latency, failures)
+    \item \textbf{Short test duration} --- no long-term etcd compaction or database bloat effects
+\end{itemize}
+
+Despite these limitations, the comparative analysis provides meaningful insights into architectural trade-offs.
 
 \section{Summary}
 
-This chapter described the methodology used to evaluate Kubernetes as a platform for business logic. Two systems implementing identical functionality were designed using different paradigms: a traditional REST-based system and a Kubernetes-native Operator-based system. The architectural differences between these systems provide the foundation for the comparative evaluation presented in subsequent chapters.
+This chapter described the methodology used to evaluate Kubernetes as a platform for business logic. Two systems implementing identical functionality were designed using different paradigms: a traditional REST-based system with PostgreSQL and a Kubernetes-native Operator-based system with CRDs. The architectural differences --- imperative vs declarative, request-response vs reconciliation, external database vs etcd --- provide the foundation for the comparative evaluation presented in Chapter~\ref{chap:eval}.

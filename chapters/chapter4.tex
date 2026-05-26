@@ -1,277 +1,709 @@
 \chapter{Implementation}\label{chap:impl}
 
-This chapter describes the implementation of the systems introduced in Chapter~\ref{chap:met}. Two functionally equivalent systems were developed: a Kubernetes-native billing system using Custom Resource Definitions (CRDs) and the Operator pattern, and a traditional monolithic backend based on REST APIs and a relational database. The goal of this chapter is to provide detailed insight into implementation decisions, internal logic, and system behavior.
+This chapter describes the implementation of the two systems introduced in Chapter~\ref{chap:met}. Both systems were developed in Go to ensure consistency in comparison, but differ significantly in architecture, execution model, and state management. The goal is to provide detailed insight into implementation decisions, internal logic, and system behavior.
 
 \section{Implementation Overview}
 
-Both systems were implemented in the Go programming language to ensure consistency in comparison. Despite sharing the same business domain, the systems differ significantly in architecture, execution model, and state management.
-
-The implementation focuses on:
+Both systems implement identical business logic for billing and subscription management:
 \begin{itemize}
-    \item Modeling business entities
-    \item Implementing business logic
-    \item Managing state transitions
-    \item Integrating observability
+    \item \textbf{BillingPlan}: Pricing configuration with price, currency, billing period
+    \item \textbf{Subscription}: User subscription linked to a plan with lifecycle management
+    \item \textbf{Billing cycle}: Automatic recurring billing with configurable intervals
+    \item \textbf{Expiration handling}: State transitions when billing conditions are not met
+    \item \textbf{Final charge}: Cleanup logic on subscription deletion
 \end{itemize}
 
-\section{Kubernetes-Based System Implementation}
+The implementations differ in:
+\begin{itemize}
+    \item \textbf{State persistence}: PostgreSQL vs etcd via CRD
+    \item \textbf{Execution model}: Request-response vs reconcile loop
+    \item \textbf{Validation}: Runtime validation vs admission control
+    \item \textbf{Observability}: HTTP/DB tracing vs Events/Conditions/Reconciliation metrics
+\end{itemize}
+
+\section{Kubernetes-Based System (kube-billing)}
 
 \subsection{Project Structure}
 
-The Kubernetes-based system was implemented using the Kubebuilder framework. The project follows standard Operator project structure:
+The Kubernetes-based system was implemented using Kubebuilder v4.13.0, which scaffolds the project structure and generates boilerplate code.
 
-\begin{itemize}
-    \item \texttt{api/}: CRD definitions (types and schemas)
-    \item \texttt{controllers/}: reconciliation logic
-    \item \texttt{config/}: Kubernetes manifests (CRDs, RBAC, deployment)
-\end{itemize}
+\begin{lstlisting}[caption={kube-billing project structure}, label={lst:kube-structure}]
+kube-billing/
+├── cmd/main.go                 # Entry point, manager setup
+├── api/v1alpha1/
+│   ├── billingplan_types.go    # BillingPlan CRD spec/status
+│   ├── subscription_types.go   # Subscription CRD spec/status
+│   └── groupversion_info.go    # GroupVersion for scheme
+├── internal/controller/
+│   ├── subscription_controller.go # Reconcile logic
+│   ├── metrics.go              # Prometheus metrics
+│   └── tracing.go              # OpenTelemetry setup
+├── config/
+│   ├── crd/bases/              # Generated CRD YAML
+│   ├── rbac/                   # ServiceAccount, Role, RoleBinding
+│   ├── manager/                # Deployment manifest
+│   ├── samples/                # Example CRs
+│   └── default/                # Kustomize overlay (HPA, PDB)
+├── test/e2e/                   # E2E tests with Kind
+├── Makefile                    # Build, test, deploy targets
+└── Dockerfile                  # Multi-stage build
+\end{lstlisting}
 
-Kubebuilder and controller-runtime were used to scaffold and manage the Operator lifecycle.
-
-\subsection{Custom Resource Definitions}
-
-Two CRDs were implemented:
+\subsection{CRD Implementation}
 
 \subsubsection{BillingPlan CRD}
 
-The \texttt{BillingPlan} resource defines pricing configuration:
+The \texttt{BillingPlan} CRD is defined in \texttt{api/v1alpha1/billingplan\_types.go}:
 
-\begin{itemize}
-    \item \texttt{price}
-    \item \texttt{currency}
-    \item \texttt{billingPeriod}
-    \item \texttt{limits} (map of usage constraints)
-\end{itemize}
+\begin{lstlisting}[language=Go]
+type BillingPlan struct {
+    metav1.TypeMeta   `json:",inline"`
+    metav1.ObjectMeta `json:"metadata,omitempty"`
+    Spec              BillingPlanSpec   `json:"spec,omitempty"`
+    Status            BillingPlanStatus `json:"status,omitempty"`
+}
 
-This resource acts as a static configuration entity referenced by subscriptions.
+type BillingPlanSpec struct {
+    Price                 string            `json:"price"`
+    Currency              Currency          `json:"currency"`
+    BillingPeriod         BillingPeriod     `json:"billingPeriod"`
+    RequeueIntervalSeconds int              `json:"requeueIntervalSeconds,omitempty"`
+    Limits                map[string]int64  `json:"limits,omitempty"`
+}
+\end{lstlisting}
+
+\textbf{Validation markers} ( kubebuilder annotations):
+\begin{lstlisting}[language=Go]
+// +kubebuilder:validation:Pattern=`^\d+(\.\d{1,2})?$`
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=20
+Price string
+
+// +kubebuilder:validation:Enum=USD;EUR;RUB;KZT;GBP;JPY;CNY
+Currency string
+
+// +kubebuilder:validation:Enum=hourly;daily;weekly;monthly;yearly
+BillingPeriod string
+
+// +kubebuilder:validation:Minimum=1
+// +kubebuilder:validation:Maximum=31536000
+RequeueIntervalSeconds int
+\end{lstlisting}
+
+\textbf{Status subresource} (managed by controller):
+\begin{lstlisting}[language=Go]
+type BillingPlanStatus struct {
+    ActiveSubscriptions int    `json:"activeSubscriptions,omitempty"`
+    TotalRevenue        string `json:"totalRevenue,omitempty"`
+    Conditions          []metav1.Condition `json:"conditions,omitempty"`
+}
+\end{lstlisting}
 
 \subsubsection{Subscription CRD}
 
-The \texttt{Subscription} resource represents active user subscriptions:
+The \texttt{Subscription} CRD is defined in \texttt{api/v1alpha1/subscription\_types.go}:
 
-\begin{itemize}
-    \item \texttt{userId}
-    \item \texttt{planRef}
-    \item \texttt{status.state}
-    \item \texttt{status.lastPayment}
-    \item \texttt{status.nextBilling}
-\end{itemize}
+\begin{lstlisting}[language=Go]
+type Subscription struct {
+    metav1.TypeMeta   `json:",inline"`
+    metav1.ObjectMeta `json:"metadata,omitempty"`
+    Spec              SubscriptionSpec   `json:"spec,omitempty"`
+    Status            SubscriptionStatus `json:"status,omitempty"`
+}
 
-The \texttt{status} subresource is used to store computed state, separating desired and observed state.
+type SubscriptionSpec struct {
+    UserID  string `json:"userId"`
+    PlanRef string `json:"planRef"`
+}
 
-\subsection{Operator Controller Implementation}
+// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9_-]+$`
+// +kubebuilder:validation:MaxLength=256
+UserID string
 
-The core business logic is implemented in the \texttt{SubscriptionReconciler}. The reconciliation loop continuously processes Subscription resources and ensures correct system state.
+// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+// +kubebuilder:validation:MaxLength=253
+PlanRef string
+\end{lstlisting}
 
-\subsubsection{Reconciliation Workflow}
+\textbf{Status subresource}:
+\begin{lstlisting}[language=Go]
+type SubscriptionStatus struct {
+    State              SubscriptionState `json:"state,omitempty"`
+    LastPayment        *metav1.Time      `json:"lastPayment,omitempty"`
+    NextBilling        *metav1.Time      `json:"nextBilling,omitempty"`
+    ObservedGeneration int64             `json:"observedGeneration,omitempty"`
+    Conditions         []metav1.Condition `json:"conditions,omitempty"`
+}
 
-The reconciliation logic follows a structured sequence:
+// +kubebuilder:validation:Enum=Active;PaymentError;Error
+type SubscriptionState string
+\end{lstlisting}
 
-\begin{enumerate}
-    \item Fetch the Subscription resource
-    \item Validate referenced BillingPlan
-    \item Attach finalizer if not present
-    \item Handle deletion logic if resource is marked for deletion
-    \item Initialize subscription state if newly created
-    \item Update status fields
-\end{enumerate}
+\subsection{Controller Implementation}
 
-This logic effectively implements a state machine driven by Kubernetes events.
+The core business logic resides in \texttt{SubscriptionReconciler} (\texttt{internal/controller/subscription\_controller.go}).
+
+\subsubsection{Reconcile Method}
+
+The \texttt{Reconcile} method implements the 6-step workflow:
+
+\begin{lstlisting}[language=Go]
+func (r *SubscriptionReconciler) Reconcile(ctx context.Context, 
+    req ctrl.Request) (ctrl.Result, error) {
+    
+    // Step 1: Fetch Subscription
+    var sub Subscription
+    if err := r.Get(ctx, req.NamespacedName, &sub); err != nil {
+        return ctrl.Result{}, client.IgnoreNotFound(err)
+    }
+    
+    // Step 2: Handle deletion
+    if !sub.DeletionTimestamp.IsZero() {
+        return r.handleDeletion(ctx, &sub)
+    }
+    
+    // Step 3: Add finalizer
+    if !controllerutil.ContainsFinalizer(&sub, FinalizerName) {
+        controllerutil.AddFinalizer(&sub, FinalizerName)
+        return r.Update(ctx, &sub)
+    }
+    
+    // Step 4: Validate BillingPlan
+    plan, err := r.getPlan(ctx, sub.Spec.PlanRef)
+    if err != nil {
+        return r.setErrorCondition(ctx, &sub, err)
+    }
+    
+    // Step 5: Initialize if new
+    if sub.Status.State == "" {
+        return r.activateSubscription(ctx, &sub, plan)
+    }
+    
+    // Step 6: Process billing cycle
+    if sub.Status.State == StateActive && time.Now().After(sub.Status.NextBilling.Time) {
+        return r.processPayment(ctx, &sub, plan)
+    }
+    
+    return ctrl.Result{RequeueAfter: time.Duration(plan.Spec.RequeueIntervalSeconds) * time.Second}, nil
+}
+\end{lstlisting}
 
 \subsubsection{Finalizer Handling}
 
-A Kubernetes finalizer (\texttt{billing.cloud-native.io/finalizer}) is used to ensure safe deletion. When a Subscription is deleted:
+The finalizer \texttt{billing.cloud-native.io/finalizer} ensures safe deletion:
 
-\begin{itemize}
-    \item The reconciliation loop intercepts the deletion event
-    \item Final billing logic is executed
-    \item The finalizer is removed
-    \item Kubernetes completes resource deletion
-\end{itemize}
+\begin{lstlisting}[language=Go]
+func (r *SubscriptionReconciler) handleDeletion(ctx context.Context, 
+    sub *Subscription) (ctrl.Result, error) {
+    
+    // Execute final billing (pro-rated refund)
+    // TODO: Implement refund calculation
+    
+    // Remove finalizer
+    controllerutil.RemoveFinalizer(sub, FinalizerName)
+    return ctrl.Result{}, r.Update(ctx, sub)
+}
+\end{lstlisting}
 
-This mechanism guarantees that cleanup logic is executed reliably.
+\subsubsection{Watches and Event Mapping}
 
-\subsubsection{State Initialization}
+The controller watches both Subscriptions and BillingPlans:
 
-When a new Subscription is created:
+\begin{lstlisting}[language=Go]
+func (r *SubscriptionReconciler) SetupWithManager(mgr ctrl.Manager) error {
+    return ctrl.NewControllerManagedBy(mgr).
+        For(&billingv1alpha1.Subscription{}).
+        Watches(
+            &billingv1alpha1.BillingPlan{},
+            handler.EnqueueRequestsFromMapFunc(r.mapPlanToSubscriptions),
+        ).
+        Complete(r)
+}
 
-\begin{itemize}
-    \item The system verifies that the referenced BillingPlan exists
-    \item The state is set to \texttt{Active}
-    \item \texttt{lastPayment} is set to current time
-    \item \texttt{nextBilling} is calculated based on billing period
-\end{itemize}
+func (r *SubscriptionReconciler) mapPlanToSubscriptions(ctx context.Context, 
+    obj client.Object) []reconcile.Request {
+    
+    plan := obj.(*billingv1alpha1.BillingPlan)
+    var subs SubscriptionList
+    r.List(ctx, &subs, client.MatchingFields{"spec.planRef": plan.Name})
+    
+    var requests []reconcile.Request
+    for _, sub := range subs.Items {
+        requests = append(requests, reconcile.Request{
+            NamespacedName: types.NamespacedName{
+                Namespace: sub.Namespace,
+                Name:      sub.Name,
+            },
+        })
+    }
+    return requests
+}
+\end{lstlisting}
 
-\subsection{Execution Model}
+\subsection{Metrics Implementation}
 
-The system operates in an event-driven manner:
+Custom Prometheus metrics are defined in \texttt{internal/controller/metrics.go}:
 
-\begin{itemize}
-    \item Resource changes trigger reconciliation
-    \item Controllers process events asynchronously
-    \item The system converges toward desired state
-\end{itemize}
+\begin{lstlisting}[language=Go]
+var (
+    activeSubscriptions = prometheus.NewGauge(prometheus.GaugeOpts{
+        Name: "billing_active_subscriptions",
+        Help: "Current number of active subscriptions",
+    })
+    
+    revenueTotal = prometheus.NewCounter(prometheus.CounterOpts{
+        Name: "billing_revenue_total",
+        Help: "Total revenue processed",
+    })
+    
+    paymentFailures = prometheus.NewCounter(prometheus.CounterOpts{
+        Name: "billing_payment_failures",
+        Help: "Number of failed payment attempts",
+    })
+)
 
-No direct request-response execution is required for business logic.
+func init() {
+    reg.MustRegister(activeSubscriptions, revenueTotal, paymentFailures)
+}
+\end{lstlisting}
 
-\subsection{Observability Implementation}
+Metrics are exposed at \texttt{:8080/metrics} and scraped by Prometheus via \texttt{ServiceMonitor}.
 
-\subsubsection{Metrics}
+\subsection{Tracing Implementation}
 
-Custom Prometheus metrics were implemented:
+OpenTelemetry tracing is initialized in \texttt{internal/controller/tracing.go}:
 
-\begin{itemize}
-    \item \texttt{billing\_active\_subscriptions} (Gauge)
-    \item \texttt{billing\_revenue\_total} (Counter)
-    \item \texttt{billing\_payment\_failures} (Counter)
-\end{itemize}
+\begin{lstlisting}[language=Go]
+func InitTracer(ctx context.Context) (func(), error) {
+    exporter, err := otlptracehttp.New(ctx,
+        otlptracehttp.WithEndpoint("localhost:4318"),
+        otlptracehttp.WithInsecure(),
+    )
+    
+    tp := trace.NewTracerProvider(
+        trace.WithBatcher(exporter),
+        trace.WithResource(resource.NewWithAttributes(
+            semconv.ServiceNameKey.String("kube-billing"),
+        )),
+    )
+    
+    otel.SetTracerProvider(tp)
+    return func() { tp.Shutdown(ctx) }, nil
+}
+\end{lstlisting}
 
-These metrics track business-level system behavior rather than only infrastructure metrics.
+Spans are created in the reconcile loop:
+\begin{lstlisting}[language=Go]
+ctx, span := otel.Tracer("kube-billing").Start(ctx, "ReconcileSubscription")
+defer span.End()
 
-\subsubsection{Tracing}
+// Payment processing span
+_, paymentSpan := otel.Tracer("kube-billing").Start(ctx, "ProcessPayment")
+defer paymentSpan.End()
+\end{lstlisting}
 
-OpenTelemetry was integrated into the reconciliation loop. Each execution of the controller creates a trace span:
+\subsection{Deployment Configuration}
 
-\begin{itemize}
-    \item Span name: \texttt{ReconcileSubscription}
-    \item Captures execution duration and behavior
-\end{itemize}
+Production deployment includes HPA, PDB, and resource limits:
 
-This enables tracing of asynchronous control-plane events.
+\begin{lstlisting}[language=yaml, caption={Kubernetes HPA and PDB configuration}, label={lst:k8s-deploy}]
+# config/default/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kube-billing-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kube-billing
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
+---
+# config/default/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kube-billing-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+\end{lstlisting}
 
-\subsection{Deployment}
-
-The system was deployed in a local Kubernetes environment using Minikube. CRDs and controller were applied using standard Kubernetes manifests and managed via kubectl.
-
-\section{Traditional System Implementation}
+\section{Traditional System (backend-billing)}
 
 \subsection{Project Structure}
 
-The traditional backend follows a monolithic architecture:
+The traditional backend follows a layered architecture:
 
-\begin{itemize}
-    \item \texttt{handlers/}: HTTP route handlers
-    \item \texttt{models/}: database models
-    \item \texttt{services/}: business logic
-    \item \texttt{db/}: database connection setup
-\end{itemize}
+\begin{lstlisting}[caption={backend-billing project structure}, label={lst:backend-structure}]
+backend-billing/
+├── main.go                     # Entry point, router setup
+├── config/
+│   ├── config.go              # Viper configuration
+│   └── prometheus.yml         # Prometheus scrape config
+├── db/
+│   └── db.go                  # GORM initialization, migrations
+├── handlers/
+│   ├── plan_handlers.go       # HTTP handlers for BillingPlan
+│   ├── subscription_handlers.go # HTTP handlers for Subscription
+│   └── health_handlers.go     # Health check endpoints
+├── middleware/
+│   ├── rate_limiter.go        # Token bucket rate limiting
+│   └── recovery.go            # Panic recovery
+├── models/
+│   └── models.go              # GORM models
+├── repository/
+│   ├── repository.go          # Repository interfaces
+│   ├── plan_repository.go     # Plan CRUD operations
+│   └── subscription_repository.go # Subscription CRUD
+├── workers/
+│   └── workers.go             # Background expiration checker
+├── validator/
+│   └── validator.go           # Custom validation rules
+├── apierrors/
+│   └── errors.go              # Typed API errors
+├── observability/
+│   └── setup.go               # Logger and tracer setup
+├── tests/
+│   ├── integration/           # Integration tests (testcontainers)
+│   └── e2e/                   # E2E tests (full HTTP scenarios)
+└── docker-compose.yml         # PostgreSQL, Jaeger, Prometheus
+\end{lstlisting}
 
-\subsection{REST API Implementation}
+\subsection{Data Models}
 
-The system exposes standard REST endpoints:
+GORM models are defined in \texttt{models/models.go}:
 
-\begin{itemize}
-    \item \texttt{GET /plans}
-    \item \texttt{POST /plans}
-    \item \texttt{GET /subscriptions}
-    \item \texttt{POST /subscriptions}
-    \item \texttt{POST /subscriptions/\{id\}/cancel}
-\end{itemize}
+\begin{lstlisting}[language=Go]
+type BillingPlan struct {
+    ID            uint           `gorm:"primaryKey"`
+    Name          string         `gorm:"uniqueIndex"`
+    Price         string         `gorm:"type:decimal(10,2)"`
+    Currency      string         `gorm:"size:3"`
+    BillingPeriod string         `gorm:"size:10"`
+    CreatedAt     time.Time
+    UpdatedAt     time.Time
+    DeletedAt     gorm.DeletedAt `gorm:"index"`
+}
 
-Business logic is executed directly within HTTP request handlers.
+type Subscription struct {
+    ID          uint           `gorm:"primaryKey"`
+    UserID      string         `gorm:"size:255;index"`
+    PlanRef     string         `gorm:"size:255;index"`
+    State       string         `gorm:"size:20;default:'Active'"`
+    LastPayment *time.Time
+    NextBilling *time.Time
+    CreatedAt   time.Time
+    UpdatedAt   time.Time
+    DeletedAt   gorm.DeletedAt `gorm:"index"`
+}
+\end{lstlisting}
 
-\subsection{Database Layer}
+\subsection{HTTP Handlers}
 
-The system uses PostgreSQL 15 for persistence, accessed through GORM ORM.
+Subscription handler implements CRUD operations:
 
-\subsubsection{Data Model}
+\begin{lstlisting}[language=Go]
+// handlers/subscription_handlers.go
+func (h *SubscriptionHandler) CreateSubscription(w http.ResponseWriter, r *http.Request) {
+    var req CreateSubscriptionRequest
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+    
+    // Validate
+    if err := validator.Validate(req); err != nil {
+        apierrors.WriteError(w, apierrors.ErrValidationFailed(err))
+        return
+    }
+    
+    // Create
+    sub, err := h.repo.Create(r.Context(), &Subscription{
+        UserID:  req.UserID,
+        PlanRef: req.PlanRef,
+        State:   "Active",
+    })
+    
+    if err != nil {
+        apierrors.WriteError(w, apierrors.ErrDatabase(err))
+        return
+    }
+    
+    // Metrics
+    metrics.SubscriptionsCreated.Inc()
+    
+    w.WriteHeader(http.StatusCreated)
+    json.NewEncoder(w).Encode(sub)
+}
+\end{lstlisting}
 
-\begin{itemize}
-    \item BillingPlan table
-    \item Subscription table
-\end{itemize}
+\subsection{Repository Layer}
 
-Relationships are implemented using foreign keys.
+Repository pattern abstracts database operations:
 
-\subsection{Asynchronous Worker}
+\begin{lstlisting}[language=Go]
+// repository/subscription_repository.go
+type SubscriptionRepository interface {
+    Create(ctx context.Context, sub *models.Subscription) (*models.Subscription, error)
+    GetByID(ctx context.Context, id uint) (*models.Subscription, error)
+    List(ctx context.Context) ([]*models.Subscription, error)
+    Cancel(ctx context.Context, id uint) error
+    FindExpired(ctx context.Context, now time.Time) ([]*models.Subscription, error)
+    Update(ctx context.Context, sub *models.Subscription) error
+}
 
-A background worker periodically checks for expired subscriptions:
+type gormSubscriptionRepo struct {
+    db *gorm.DB
+}
 
-\begin{itemize}
-    \item Iterates through subscriptions
-    \item Compares current time with \texttt{nextBilling}
-    \item Updates state to \texttt{Expired} if necessary
-\end{itemize}
+func (r *gormSubscriptionRepo) FindExpired(ctx context.Context, now time.Time) ([]*models.Subscription, error) {
+    var subs []*models.Subscription
+    err := r.db.WithContext(ctx).
+        Where("state = ? AND next_billing < ?", "Active", now).
+        Find(&subs).Error
+    return subs, err
+}
+\end{lstlisting}
 
-This replaces the continuous reconciliation loop used in the Kubernetes system.
+\subsection{Background Worker}
 
-\subsection{Execution Model}
+The expiration checker runs every 30 seconds:
 
-The system primarily follows a synchronous model:
+\begin{lstlisting}[language=Go]
+// workers/workers.go
+func StartExpirationChecker(ctx context.Context, repo SubscriptionRepository, interval time.Duration) {
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            expired, err := repo.FindExpired(ctx, time.Now())
+            if err != nil {
+                log.Error("Failed to find expired", "error", err)
+                continue
+            }
+            
+            for _, sub := range expired {
+                sub.State = "Expired"
+                if err := repo.Update(ctx, sub); err != nil {
+                    log.Error("Failed to update", "id", sub.ID, "error", err)
+                }
+            }
+            log.Info("Expiration check completed", "expired", len(expired))
+        }
+    }
+}
+\end{lstlisting}
 
-\begin{itemize}
-    \item Clients initiate actions via HTTP requests
-    \item Server processes requests and updates database
-\end{itemize}
+\subsection{Validation}
 
-Asynchronous logic is limited to periodic background tasks.
+Input validation uses go-playground/validator:
 
-\subsection{Observability Implementation}
+\begin{lstlisting}[language=Go]
+// validator/validator.go
+var validate *validator.Validate
+
+func init() {
+    validate = validator.New()
+    
+    // Custom validation for currency
+    validate.RegisterValidation("currency", func(fl validator.FieldLevel) bool {
+        currency := fl.Field().String()
+        validCurrencies := map[string]bool{
+            "USD": true, "EUR": true, "RUB": true, 
+            "KZT": true, "GBP": true, "JPY": true, "CNY": true,
+        }
+        return validCurrencies[currency]
+    })
+}
+
+type CreateSubscriptionRequest struct {
+    UserID  string `validate:"required,alphanum,max=255"`
+    PlanRef string `validate:"required,max=255"`
+}
+\end{lstlisting}
+
+\subsection{Observability}
 
 \subsubsection{Metrics}
 
-The system captures standard HTTP metrics:
+Prometheus metrics in \texttt{handlers/subscription\_handlers.go}:
 
-\begin{itemize}
-    \item Request latency
-    \item Request count
-\end{itemize}
+\begin{lstlisting}[language=Go]
+var (
+    subscriptionsCreated = prometheus.NewCounter(prometheus.CounterOpts{
+        Name: "billing_subscriptions_created_total",
+        Help: "Total number of created subscriptions",
+    })
+    
+    subscriptionsCancelled = prometheus.NewCounter(prometheus.CounterOpts{
+        Name: "billing_subscriptions_cancelled_total",
+        Help: "Total number of cancelled subscriptions",
+    })
+)
+\end{lstlisting}
 
 \subsubsection{Tracing}
 
-OpenTelemetry was integrated with GORM:
+OpenTelemetry integration in \texttt{observability/setup.go}:
 
+\begin{lstlisting}[language=Go]
+func SetupTracing(ctx context.Context) (func(), error) {
+    exporter, err := otlptracehttp.New(ctx,
+        otlptracehttp.WithEndpoint("jaeger:4318"),
+        otlptracehttp.WithInsecure(),
+    )
+    
+    tp := trace.NewTracerProvider(
+        trace.WithBatcher(exporter),
+        trace.WithResource(resource.NewWithAttributes(
+            semconv.ServiceNameKey.String("backend-billing"),
+        )),
+    )
+    
+    otel.SetTracerProvider(tp)
+    
+    // Apply to HTTP router
+    router.Use(otelmux.Middleware("billing-api"))
+    
+    // Apply to GORM
+    db.Use(tracing.NewPlugin())
+    
+    return func() { tp.Shutdown(ctx) }, nil
+}
+\end{lstlisting}
+
+\section{Implementation Comparison}
+
+\subsection{Code Metrics}
+
+Table~\ref{tab:code-metrics} compares code metrics between the two implementations.
+
+\begin{table}[h]
+\centering
+\caption{Code Metrics Comparison}
+\label{tab:code-metrics}
+\small\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Metric} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
+Go source files & 24 & 13 \\
+Lines of code (excluding tests) & 3,061 & 2,483 \\
+Test files & 8 & 4 \\
+Max cyclomatic complexity & 12 & 25 \\
+Dependencies (go.mod) & 214 & 191 \\
+Test coverage & 86.2\% & $\sim$70\% \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Analysis}:
 \begin{itemize}
-    \item Traces API request lifecycle
-    \item Captures database query execution
+    \item \textbf{backend-billing} has more files but lower complexity --- traditional separation of concerns
+    \item \textbf{kube-billing} is more concentrated --- reconcile loop handles multiple responsibilities
+    \item Higher complexity in kube-billing due to Reconcile pattern and Kubernetes API integration
 \end{itemize}
 
-Tracing spans represent synchronous execution paths rather than event-driven processing.
+\subsection{State Management}
 
-\section{Functional Validation}
-
-To validate both implementations, a series of functional scenarios were executed.
-
-\subsection{Subscription Creation}
-
+\textbf{backend-billing}:
 \begin{itemize}
-    \item A BillingPlan is created
-    \item A Subscription referencing the plan is created
-    \item System initializes state and billing timestamps
+    \item Explicit CRUD operations through repository pattern
+    \item Transactions via GORM (\texttt{db.Begin()}, \texttt{Commit()}, \texttt{Rollback()})
+    \item Soft delete via \texttt{DeletedAt} timestamp
 \end{itemize}
 
-Both systems successfully performed initialization, although execution mechanisms differed.
-
-\subsection{Subscription Expiration}
-
+\textbf{kube-billing}:
 \begin{itemize}
-    \item Time-based conditions trigger expiration
-    \item Kubernetes system handles via reconciliation
-    \item Traditional system handles via background worker
+    \item Declarative state via \texttt{spec} (desired) and \texttt{status} (actual)
+    \item Optimistic locking via \texttt{resourceVersion}
+    \item Finalizers for cleanup guarantees
+    \item Conditions for standardized state reporting
 \end{itemize}
 
-\subsection{Subscription Deletion}
+\subsection{Error Handling}
 
+\textbf{backend-billing}:
+\begin{lstlisting}[language=Go]
+// Explicit error returns
+sub, err := h.repo.Create(ctx, &Subscription{...})
+if err != nil {
+    if errors.Is(err, repository.ErrNotFound) {
+        apierrors.WriteError(w, apierrors.ErrNotFound("plan"))
+    } else {
+        apierrors.WriteError(w, apierrors.ErrDatabase(err))
+    }
+    return
+}
+\end{lstlisting}
+
+\textbf{kube-billing}:
+\begin{lstlisting}[language=Go]
+// Eventual consistency with requeue
+plan, err := r.getPlan(ctx, sub.Spec.PlanRef)
+if err != nil {
+    // Set error condition
+    sub.Status.Conditions = append(sub.Status.Conditions, 
+        metav1.Condition{
+            Type:   "BillingPlanNotFound",
+            Status: "True",
+            Reason: "PlanNotFound",
+        })
+    r.Status().Update(ctx, sub)
+    
+    // Requeue for retry
+    return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+}
+\end{lstlisting}
+
+\subsection{Testing Approach}
+
+\textbf{backend-billing}:
 \begin{itemize}
-    \item Kubernetes system executes finalizer logic before deletion
-    \item Traditional system directly deletes record
+    \item \textbf{Unit tests}: testify mocks for repository layer
+    \item \textbf{Integration tests}: testcontainers-go (PostgreSQL in Docker)
+    \item \textbf{E2E tests}: HTTP client against running server
 \end{itemize}
 
-This demonstrates stronger lifecycle guarantees in the Kubernetes approach.
+\textbf{kube-billing}:
+\begin{itemize}
+    \item \textbf{Unit tests}: envtest (local API server + etcd)
+    \item \textbf{Integration tests}: Ginkgo + Gomega with fake client
+    \item \textbf{E2E tests}: Kind cluster (Kubernetes in Docker)
+\end{itemize}
 
 \section{Implementation Challenges}
 
-Several challenges were encountered during implementation:
+\subsection{Kubernetes System Challenges}
 
 \begin{itemize}
-    \item Increased complexity of Kubernetes development environment
-    \item Need for careful CRD schema design
-    \item Debugging asynchronous reconciliation logic
-    \item Managing eventual consistency in controller behavior
+    \item \textbf{Steep learning curve}: Kubebuilder, controller-runtime, CRD schema
+    \item \textbf{Debugging complexity}: Asynchronous reconcile loop, eventual consistency
+    \item \textbf{Schema evolution}: CRD versioning and migration strategies
+    \item \textbf{Testing overhead}: envtest setup, Kind cluster management
 \end{itemize}
 
-In contrast, the traditional system was simpler to implement but required explicit handling of lifecycle events.
+\subsection{Traditional System Challenges}
+
+\begin{itemize}
+    \item \textbf{Manual lifecycle management}: No built-in finalizer equivalent
+    \item \textbf{Polling overhead}: Background worker continuously queries database
+    \item \textbf{Scaling complexity}: Manual horizontal scaling with load balancer
+    \item \textbf{State recovery}: No automatic reconstruction from declarative state
+\end{itemize}
 
 \section{Summary}
 
-This chapter presented the implementation of two systems for subscription management using different architectural paradigms. The Kubernetes-based system leverages CRDs and the Operator pattern to implement business logic as a declarative, event-driven process. The traditional system implements the same logic using REST APIs and a relational database. These implementations provide the foundation for the experimental evaluation presented in the next chapter.
+This chapter presented detailed implementation of both systems. The Kubernetes-based system leverages CRDs, Operators, and the reconcile pattern to implement declarative business logic. The traditional system uses REST APIs, PostgreSQL, and background workers for imperative logic. Key differences include state management (etcd vs PostgreSQL), execution model (event-driven vs request-response), and error handling (eventual consistency vs explicit errors). These implementation details form the basis for the experimental evaluation in Chapter~\ref{chap:eval}.
