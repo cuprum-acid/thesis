@@ -201,16 +201,16 @@ Several directions for future research emerge from this work:
 
 \section{Final Remarks}
 
-This thesis has demonstrated that Kubernetes can serve as a platform for business logic implementation through CRDs and the Operator pattern. The approach is technically feasible and provides operational benefits (automatic scaling, self-healing, built-in observability) but comes with significant performance overhead (10--20$\times$ latency, 5$\times$ lower throughput) and development complexity.
+The central claim of this thesis is that Kubernetes Operators constitute a lifecycle-oriented business state management platform: a paradigm distinct from REST microservices, which centre on request-response semantics, and from infrastructure operators, which centre on resource provisioning. The case for this paradigm rests not on architectural fashion but on measurable trade-offs --- the reconcile loop and its surrounding primitives buy operational properties (eventual consistency, self-healing, finalizer-guarded cleanup, structured Conditions, declarative audit trail) at the price of an order-of-magnitude latency penalty and a multiple of the resource footprint compared with a conventional REST stack.
 
-The choice between traditional and Operator-based architectures is not binary but contextual. Organizations should evaluate their specific requirements:
+For practitioners, this implies a decision framework anchored in workload shape rather than in technological alignment:
 
 \begin{itemize}
-    \item If \textbf{performance, simplicity, and portability} are priorities $\rightarrow$ traditional backend
-    \item If \textbf{operational automation, GitOps, and cloud-native integration} are priorities $\rightarrow$ Kubernetes Operator
+    \item If the natural unit of work is a request that must complete synchronously and the business does not need lifecycle hooks beyond cancellation, a traditional backend remains the right choice; the operator pattern adds latency, dependencies, and operational surface area without compensating benefit.
+    \item If the natural unit of work is the lifecycle of a long-lived entity --- a subscription, a tenant, a content workflow --- and the business needs guaranteed cleanup, structured state reporting, and an audit trail that survives the absence of a human operator, the operator pattern's primitives genuinely earn their cost.
 \end{itemize}
 
-The research contributes empirical evidence to the cloud-native architecture discourse, moving beyond anecdotal claims to data-driven decision making. Both approaches have merit; the optimal choice depends on organizational context, team expertise, and business requirements.
+The contribution is methodological as well as empirical: by treating asymmetries (cancellation-as-deletion vs cancellation-as-state, error-as-Condition vs error-as-HTTP-status) as findings rather than as inconveniences to be smoothed away, the comparison surfaces what the two paradigms actually disagree about, which is what a practitioner needs to evaluate a choice that the surface-level feature matrices cannot.
 
 \section{Publications and Artifacts}
 

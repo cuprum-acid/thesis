@@ -46,18 +46,18 @@ The primary objective of this research is to explore and evaluate Kubernetes as 
     \item Analyze results across multiple dimensions including reaction time to events, implementation complexity, observability capabilities, and system reliability.
 \end{enumerate}
 
-The expected contributions of this work include:
+The central thesis advanced by this work is that \emph{Kubernetes Operators constitute a lifecycle-oriented business state management platform: a programming model distinct both from the request-response model of REST microservices and from the resource-provisioning focus of infrastructure operators, and one whose cost relative to a conventional REST backend is empirically quantifiable rather than anecdotal}. From this thesis, the contributions of the work are:
 
 \begin{itemize}
-    \item A systematic analysis of using Kubernetes CRDs and Operators for business logic implementation, filling a gap in current research~\cite{kubernetes_multivocal_review}.
-    
-    \item A working prototype demonstrating practical patterns for modeling business entities and processes as Kubernetes custom resources.
-    
-    \item Quantitative performance comparisons providing empirical evidence of the strengths and weaknesses of this approach.
-    
-    \item Practical recommendations and guidelines for practitioners considering this architectural approach, including identification of suitable use cases and potential pitfalls.
-    
-    \item Insights into the boundaries of Kubernetes extensibility and the Infrastructure-as-Code paradigm.
+    \item \textbf{Quantification of the latency--automation trade-off.} The first comparative measurement, in the open literature known to the author, of the latency, throughput, and resource-utilisation cost of running an identical business workflow as a Kubernetes Operator versus a conventional REST-and-relational-database backend, conducted on functionally comparable reference implementations~\cite{kubernetes_multivocal_review, etcd_impact}.
+
+    \item \textbf{A reference programming model for lifecycle-oriented business logic.} A demonstration that the reconcile loop, finalizers, and Conditions form a sufficient programming surface for stateful business workflows whose natural unit of work is a resource lifecycle rather than an individual request~\cite{ibryam2020, dobies2020}.
+
+    \item \textbf{Empirical characterisation of construct asymmetries.} An explicit account of where the two architectures cannot be aligned --- cancellation semantics, error-as-state versus error-as-Condition, audit trails --- with the asymmetries treated as findings rather than smoothed away as implementation details.
+
+    \item \textbf{A decision framework anchored in evidence rather than intuition.} Practitioner-facing criteria for when the operator pattern is justified for business logic, anchored in the measured trade-offs rather than in folklore about cloud-native architecture~\cite{kubernetes_multivocal_review}.
+
+    \item \textbf{Two open-source reference implementations.} Codebases that can be re-executed, modified, and extended for further research; both repositories include their benchmark harnesses and raw data.
 \end{itemize}
 
 \section{Research Methodology}\label{sec:methodology}
@@ -87,6 +87,42 @@ The remainder of this thesis is organized as follows:
 \textbf{Chapter~\ref{chap:eval} --- Evaluation and Discussion}: Presents the experimental setup, methodology, and results of the comparative evaluation across code metrics, performance, resource utilization, and operational characteristics, together with the analysis and discussion of those results.
 
 \textbf{Chapter~\ref{chap:conclusion} --- Conclusion}: Answers the research questions, summarizes the contributions and limitations, and suggests directions for future work.
+
+Recurring terms (CRD, Operator, Controller, Reconciler, Spec/Status, Finalizer, Condition, RequeueAfter, Eventually consistent, GitOps) are defined together in Section~\ref{sec:terminology} so that the rest of the thesis can use them without re-introducing each on first use.
+
+\section{Terminology}\label{sec:terminology}
+
+The following terms recur throughout the thesis and are used with the meanings stated below.
+
+\begin{description}
+    \item[\textbf{Custom Resource Definition (CRD).}] A cluster-scoped schema, registered with the Kubernetes API server, that introduces a new resource kind alongside the built-in ones~\cite{crd_kubernetes, hausenblas2019}. The CRD names the kind, its API group and version, an OpenAPI v3 validation schema, and optionally a status subresource.
+
+    \item[\textbf{Custom Resource (CR).}] An individual instance of a CRD --- the YAML or JSON document a user applies with \texttt{kubectl}. Where the literature uses ``CRD'' loosely to mean both schema and instance, this thesis distinguishes the two.
+
+    \item[\textbf{Controller.}] A process that watches one or more resource kinds and reconciles their observed state against their declared state. Controllers may be built-in (the deployment controller, the service controller) or custom~\cite{controller_pattern, ibryam2020}.
+
+    \item[\textbf{Operator.}] A custom controller paired with one or more CRDs, where the controller encodes operational knowledge specific to a domain. The terms ``operator'' and ``custom controller'' are sometimes conflated; this thesis uses ``operator'' when the controller-plus-CRDs combination is being discussed as a packaged unit, and ``controller'' when only the runtime behaviour is in scope~\cite{operator_pattern, dobies2020}.
+
+    \item[\textbf{Reconciler.}] The function (typically named \texttt{Reconcile}) inside a controller that processes a single work-queue item. Each invocation is given the namespaced name of the resource to act on and returns a result that may schedule a future reconciliation.
+
+    \item[\textbf{Reconciliation loop.}] The event-driven loop in which a controller observes a resource change via the Kubernetes watch API, enqueues the affected resource, and dispatches the work-queue item to the reconciler. ``Loop'' is a misnomer in that there is no polling; reconciliations are triggered by events and by explicit re-queue requests.
+
+    \item[\textbf{Execution model.}] In this thesis, the mechanism by which a system triggers and processes business state transitions. The traditional backend's execution model is request-response with a background polling worker; the operator's execution model is event-driven reconciliation with controller-runtime-scheduled re-queueing.
+
+    \item[\textbf{Spec and Status.}] The two halves of a Kubernetes resource. \texttt{spec} is the declared desired state, written by users or higher-level controllers; \texttt{status} is the observed state, written by the resource's controller through a dedicated subresource that bypasses optimistic locking on the spec.
+
+    \item[\textbf{Finalizer.}] A string-valued entry in a resource's metadata that prevents deletion until removed. A controller treats the presence of a deletion timestamp on a finalizer-bearing resource as a signal to run cleanup work; on completion it removes its own finalizer entry, at which point the API server completes the deletion. Finalizers guarantee that cleanup hooks execute even across controller restarts.
+
+    \item[\textbf{Condition.}] A standardised \texttt{metav1.Condition} structure inside \texttt{status.conditions} carrying a type, a True/False/Unknown status, a machine-readable reason, a human-readable message, and the generation observed when the condition was last set. Multiple conditions on the same resource provide a multi-dimensional state representation that a single state field cannot~\cite{ibryam2020}.
+
+    \item[\textbf{RequeueAfter.}] A field in the result returned by \texttt{Reconcile} that asks controller-runtime to enqueue another reconciliation after a specified delay. The mechanism replaces polling: the controller does not actively check; it instructs the runtime when to wake it up.
+
+    \item[\textbf{Admission control.}] The chain of validating and mutating webhooks that the API server consults before persisting a resource write. CRD schema validation runs as part of admission, which means invalid resources are rejected before they reach the controller.
+
+    \item[\textbf{Eventually consistent.}] A property of the operator pattern: a controller does not commit to bringing \texttt{status} into agreement with \texttt{spec} within a bounded interval, only to retrying until success is achieved. Failures are recoverable by definition.
+
+    \item[\textbf{GitOps.}] A deployment discipline in which the desired state of a system is captured in a Git repository and an in-cluster agent (Argo~CD, Flux) continuously reconciles the cluster toward that committed state~\cite{argocd, gitops}.
+\end{description}
 
 \section{Summary}
 

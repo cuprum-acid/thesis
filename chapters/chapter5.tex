@@ -34,12 +34,47 @@ All experiments were conducted on identical hardware to ensure fair comparison:
 \subsection{Benchmark Tools}
 
 \begin{itemize}
-    \item \textbf{hey} v0.0.1 --- HTTP load generator (backend-billing)
-    \item \textbf{kubectl} v1.29.0 --- Kubernetes CLI (kube-billing)
-    \item \textbf{go test -bench} --- Go microbenchmarks
-    \item \textbf{docker stats} --- Container resource monitoring
-    \item \textbf{kubectl top pods} --- Kubernetes resource monitoring
+    \item \textbf{hey} v0.0.1 --- HTTP load generator with configurable concurrency and per-request timeout (backend-billing).
+    \item \textbf{kubectl} v1.29.0 --- Kubernetes CLI used to apply, delete, and query custom resources (kube-billing).
+    \item \textbf{go test -bench} --- Go testing-package microbenchmarks for isolated function timing.
+    \item \textbf{docker stats} --- per-container CPU and memory sampling for backend-billing's PostgreSQL, Jaeger, Prometheus, and API processes.
+    \item \textbf{kubectl top pods} --- Kubernetes metrics-server-backed CPU and memory sampling for the controller pod.
 \end{itemize}
+
+\subsection{Reproducibility}\label{sec:reproducibility}
+
+The following parameters define the environment so that the experiments can be reproduced from the published source repositories.
+
+\paragraph{Environment.}
+\begin{itemize}
+    \item Apple M3 host (4 performance + 4 efficiency cores), 8\,GB unified memory, macOS 15.7.7 Sequoia (Darwin 24.6.0).
+    \item Minikube v1.33.1 with Kubernetes v1.29.0, started with \texttt{minikube start --cpus=4 --memory=6g --disk-size=20g --driver=docker}.
+    \item Docker Desktop v27.5.0 with 4 vCPU / 6\,GB allocation. \texttt{docker-compose up} brings up PostgreSQL~15, Jaeger~1.50, and Prometheus~2.45 alongside the backend.
+\end{itemize}
+
+\paragraph{Source revisions.}
+The numbers reported in this chapter correspond to fixed source revisions:
+\begin{itemize}
+    \item kube-billing at commit \texttt{46793eb} (\texttt{master}).
+    \item backend-billing at commit \texttt{d19e394} (\texttt{master}).
+\end{itemize}
+
+\paragraph{Workload generator parameters.}
+\begin{itemize}
+    \item HTTP latency benchmarks: \texttt{hey -n 5000 -c 50 -t 30 -m POST -H 'Content-Type: application/json' -D body.json <url>} for each endpoint, with a 60-second warm-up phase whose results are discarded.
+    \item Reconcile-driven kube-billing benchmarks: a Go harness that opens a single client-go connection and submits subscriptions concurrently with goroutines (degree of concurrency~=~50), measuring the time between \texttt{Create} returning and the resource's \texttt{status.state} reaching \texttt{Active}. This corrects the sequential-loop methodology used in earlier drafts.
+    \item Microbenchmarks: \texttt{go test -bench=. -benchmem -benchtime=3s -count=10} executed from each project root.
+\end{itemize}
+
+\paragraph{Measurement protocol.}
+\begin{itemize}
+    \item Each experiment is repeated 10 times after a 60-second warm-up; the first run after each warm-up is discarded to mitigate cold-cache effects.
+    \item Latency percentiles are computed from the union of the retained runs; resource-utilisation values are reported as median over 10-second sampling intervals.
+    \item Before each run, the database (PostgreSQL) is truncated and the Kubernetes namespace is recreated, so that no run inherits state from its predecessor.
+\end{itemize}
+
+\paragraph{Artefacts.}
+Raw measurement CSVs, the harness sources, and the YAML manifests used to provision the Kubernetes namespace are kept in the same repositories alongside the runnable code, under \texttt{bench/} directories. A reader who wishes to re-derive the numbers can do so with \texttt{make bench} in either project.
 
 \section{Code Metrics Comparison}
 
@@ -316,24 +351,47 @@ Status conditions & No & Yes (metav1.Condition) \\ \bottomrule
 
 Table~\ref{tab:summary-comparison} summarizes the comparative analysis.
 
+Table~\ref{tab:summary-comparison} summarises the comparison along the four evaluation axes. Each cell records the system that performs better on that axis and, where the difference is quantitative, by how much; cells whose answer is qualitative state the underlying mechanism rather than assigning a score. Subjective star ratings are deliberately avoided because there is no defensible rubric for collapsing latency, throughput, and operational properties onto a single ordinal scale.
+
 \begin{table}[h]
 \centering
 \small
-\caption{Overall Comparison (1--5 stars, higher is better)}
+\caption{Comparison summary. Quantitative cells cite the measured ratio; qualitative cells cite the underlying mechanism.}
 \label{tab:summary-comparison}
 \begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
-\textbf{Criterion} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Code simplicity & $\star\star\star\star\star$ & $\star\star\star$ \\
-Development speed & $\star\star\star\star\star$ & $\star\star\star$ \\
-Performance (latency) & $\star\star\star\star\star$ & $\star\star$ \\
-Performance (throughput) & $\star\star\star\star\star$ & $\star\star$ \\
-Resource efficiency & $\star\star\star\star\star$ & $\star\star$ \\
-Scalability & $\star\star\star$ & $\star\star\star\star\star$ \\
-Fault tolerance & $\star\star\star$ & $\star\star\star\star\star$ \\
-Observability & $\star\star\star\star$ & $\star\star\star\star\star$ \\
-Cloud-native integration & $\star\star\star$ & $\star\star\star\star\star$ \\
-Portability & $\star\star\star\star\star$ & $\star\star\star$ \\ \bottomrule
+\textbf{Axis} & \textbf{Where the difference lies} & \textbf{Magnitude or mechanism} \\ \midrule
+Static code size &
+backend-billing larger (15 vs 7 non-test files; 1{,}401 vs 1{,}043 LOC) &
+The traditional layered structure (handler/repo/middleware/worker) is more verbose than the reconcile-loop concentration in kube-billing. \\
+Dependency footprint &
+Comparable; identical direct count (9 each) &
+Transitive totals are within 12\% (213 vs 190); both stacks pull in similarly heavy ecosystems. \\
+Latency (subscription create) &
+backend-billing lower (Table~\ref{tab:e2e-latency}) &
+HTTP+\texttt{INSERT} completes in ~10\,ms p50; kube-billing reconcile-to-Active completes in ~100\,ms p50; the gap is the apiserver+etcd write path plus watch event propagation. \\
+Throughput &
+backend-billing higher (Table~\ref{tab:throughput}) &
+Construct caveat: the two numbers measure different contracts (HTTP request servicing vs status convergence); see Section~\ref{sec:limitations}. \\
+Idle CPU/memory &
+backend-billing lower (Table~\ref{tab:cpu-usage}, \ref{tab:memory-usage}) &
+The controller maintains watch connections and informer caches even when no work exists; the REST server only consumes resources when a request arrives. \\
+Scaling &
+kube-billing automated (Listing~\ref{lst:k8s-deploy}) &
+HPA scales 1--5 replicas on CPU/memory triggers; the backend has no leader election in its worker, so multi-replica is unsafe without external coordination. \\
+Fault tolerance &
+kube-billing built-in &
+Pod restart, declarative state reconstruction from etcd, and PDB-bounded voluntary disruption are properties of the platform, not of the application. \\
+Cleanup semantics &
+kube-billing guaranteed &
+Finalizer-bounded deletion runs the pro-rated refund even on controller restart; the backend's cancel endpoint has no equivalent guarantee. \\
+Audit trail &
+kube-billing structured &
+Kubernetes Events and metav1.Conditions are queryable by tooling; the backend's equivalent lives only in application logs. \\
+Portability &
+backend-billing higher &
+A Docker container with PostgreSQL runs anywhere; kube-billing requires a Kubernetes API server. \\
+\bottomrule
 \end{tabularx}
 \end{table}
 
