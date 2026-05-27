@@ -103,11 +103,12 @@ The approach is \textbf{not recommended} when:
 This thesis makes the following contributions:
 
 \begin{enumerate}
-    \item \textbf{Two production-ready implementations}:
+    \item \textbf{Two reference implementations released as open source}:
     \begin{itemize}
-        \item backend-billing: Go REST API with PostgreSQL, 86.2\% test coverage, CI/CD pipeline
-        \item kube-billing: Kubernetes Operator with CRDs, HPA, PDB, production manifests
+        \item backend-billing: Go REST API with PostgreSQL, OpenTelemetry instrumentation, Docker-Compose deployment with Jaeger and Prometheus, and a test suite covering apierrors, middleware, and validator packages (per-package coverage reported in Section~\ref{sec:coverage-results}).
+        \item kube-billing: Kubernetes Operator with two CRDs, finalizer-driven pro-rated refund, controller-runtime metrics integration, OpenTelemetry tracing, HPA, PDB, and a Kustomize-based deployment overlay.
     \end{itemize}
+    Both are reference quality rather than production quality: they have no payment-gateway integration, no horizontal-replica leader election in the traditional worker, and the operator's revenue counter is currency-agnostic (a single dimensionless metric). Section~\ref{sec:limitations} catalogues these and other limitations systematically.
     
     \item \textbf{Systematic architectural comparison}:
     \begin{itemize}
@@ -121,22 +122,37 @@ This thesis makes the following contributions:
     \item \textbf{Reference implementation}: Open-source codebases serving as templates for similar projects
 \end{enumerate}
 
-\section{Limitations}
+\section{Limitations}\label{sec:limitations}
 
-Several limitations affect this research:
+The limitations of this work fall into four categories, mirroring the validity dimensions used in the evaluation chapter.
 
+\paragraph{Implementation limitations.}
 \begin{itemize}
-    \item \textbf{Local environment}: Experiments conducted on Minikube/Docker Desktop; production clusters may show different characteristics
-    
-    \item \textbf{Simulated payments}: No integration with external payment gateway (Stripe, PayPal); real-world latency and failure modes not captured
-    
-    \item \textbf{Single workload type}: Billing domain may not represent all business logic patterns (e.g., real-time processing, batch jobs)
-    
-    \item \textbf{Short test duration}: No long-term effects (etcd compaction, database bloat, metric cardinality explosion)
-    
-    \item \textbf{Incomplete finalizer logic}: Pro-rated refund calculation not implemented in kube-billing
-    
-    \item \textbf{No multi-tenant testing}: Evaluation focused on single-tenant scenarios; multi-tenant isolation not assessed
+    \item \textbf{No payment-gateway integration.} Both systems simulate payments by incrementing counters; real-world latency, idempotency keys, and partial-failure semantics of services such as Stripe are not captured.
+    \item \textbf{Currency-agnostic revenue metric.} The kube-billing \texttt{billing\_revenue\_total} counter accumulates numerical price values without a currency label, so revenue across different currencies is conflated.
+    \item \textbf{Hardcoded backend billing period.} The traditional handler computes the next billing date as \texttt{now + one month} regardless of the plan's declared \texttt{billingPeriod}, which means the systems do not interpret all plan configurations identically.
+    \item \textbf{Single-replica worker.} The traditional expiration checker has no leader-election support, so the system cannot be safely horizontally scaled without external coordination.
+    \item \textbf{Unused custom validators.} The traditional backend's \texttt{currency}, \texttt{billing\_period}, and \texttt{price} validators are registered but never invoked, leaving validation looser than the CRD's admission-time schema.
+\end{itemize}
+
+\paragraph{Methodological limitations.}
+\begin{itemize}
+    \item \textbf{Local single-node environment.} Experiments were conducted on a single Apple Silicon laptop running Minikube and Docker Desktop. Production clusters incur additional network latency to the API server, etcd raft latency, and apiserver flow-control behaviour that this environment cannot reproduce.
+    \item \textbf{No failure injection.} The fault-tolerance claims were not exercised against forced pod kills, network partitions, etcd unavailability, or PostgreSQL primary failover.
+    \item \textbf{Short measurement horizon.} Benchmarks ran for minutes, not hours or days; long-running effects (etcd compaction backlog, PostgreSQL index bloat, Prometheus cardinality growth) are not represented.
+\end{itemize}
+
+\paragraph{Internal validity threats.}
+\begin{itemize}
+    \item \textbf{Construct mismatch between throughput definitions.} backend-billing throughput is measured with concurrent HTTP load; kube-billing throughput is bounded by the time it takes the apiserver and reconciler to drive a resource to \texttt{status.state == Active}. The two measurements describe different system contracts and should not be subtracted as if they were comparable units.
+    \item \textbf{Asymmetric workloads.} The two implementations do not expose identical state vocabularies (Table~\ref{tab:state-comparison}); the comparison is between systems that satisfy similar but not identical functional contracts.
+\end{itemize}
+
+\paragraph{External validity threats.}
+\begin{itemize}
+    \item \textbf{Single business domain.} Billing exhibits stateful, time-driven semantics; the conclusions may not transfer to request-driven workloads (search, content delivery) or pure data-pipeline workloads (ETL, streaming aggregation).
+    \item \textbf{Single hardware platform.} Apple M3 unified memory and ARM64 microarchitecture differ from x86 server-class processors; absolute numbers may not generalise.
+    \item \textbf{No multi-tenant evaluation.} Namespace-based isolation, resource quotas, and noisy-neighbour effects were not assessed.
 \end{itemize}
 
 \section{Future Work}

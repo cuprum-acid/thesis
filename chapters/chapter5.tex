@@ -365,15 +365,7 @@ The traditional backend is preferable when:
 
 \subsection{Threats to Validity}
 
-Several limitations affect generalizability:
-
-\begin{itemize}
-    \item \textbf{Local environment} --- production clusters may show different performance characteristics
-    \item \textbf{Single-node testing} --- no network partition or leader election effects
-    \item \textbf{Simulated payments} --- no external payment gateway latency/failures
-    \item \textbf{Short test duration} --- no long-term etcd compaction or database bloat
-    \item \textbf{Fixed workload} --- results may vary with different access patterns
-\end{itemize}
+The full catalogue of limitations and validity threats --- including the construct mismatch between HTTP and reconcile-driven throughput, the asymmetric state vocabularies, and the absence of failure injection --- is consolidated in Section~\ref{sec:limitations}.
 
 \section{Summary}
 

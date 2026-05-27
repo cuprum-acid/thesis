@@ -293,46 +293,7 @@ The declarative state model enables automatic recovery: if the controller crashe
 
 \subsection{Observability Integration}
 
-\subsubsection{Prometheus Metrics}
-
-Three custom business metrics are exposed at \texttt{:8080/metrics}:
-
-\begin{itemize}
-    \item \texttt{billing\_active\_subscriptions} (Gauge): Current count of Active subscriptions
-    \item \texttt{billing\_revenue\_total} (Counter): Cumulative revenue processed (sum of all successful billing cycles)
-    \item \texttt{billing\_payment\_failures} (Counter): Number of failed payment attempts (defined but not incremented in current implementation)
-\end{itemize}
-
-Additionally, controller-runtime exposes standard metrics:
-\begin{itemize}
-    \item \texttt{controller\_runtime\_reconcile\_total} (Counter): Total reconciliation attempts by result (success, error, requeue)
-    \item \texttt{controller\_runtime\_reconcile\_errors\_total} (Counter): Total reconciliation errors
-\end{itemize}
-
-\subsubsection{OpenTelemetry Tracing}
-
-Distributed tracing captures asynchronous reconciliation flow:
-
-\begin{itemize}
-    \item \textbf{Root span}: \texttt{ReconcileSubscription} --- covers entire reconciliation cycle
-    \item \textbf{Child span}: \texttt{ProcessPayment} --- billing logic execution
-    \item \textbf{Mapped span}: \texttt{MapPlanToSubscriptions} --- triggered by BillingPlan watch events
-\end{itemize}
-
-Traces are exported via OTLP over HTTP to \texttt{localhost:4318} (Jaeger-compatible).
-
-\subsubsection{Kubernetes Events}
-
-The controller emits audit events for significant state changes:
-
-\begin{itemize}
-    \item \texttt{Normal SubscriptionActivated}: Subscription successfully activated
-    \item \texttt{Normal PaymentProcessed}: Billing cycle completed
-    \item \texttt{Warning PaymentFailed}: Payment processing failed
-    \item \texttt{Normal FinalBilling}: Final billing executed on deletion
-\end{itemize}
-
-Events are accessible via \texttt{kubectl get events --field-selector involvedObject.name=sub-user1}.
+The Kubernetes-based system's observability spans three layers --- Prometheus metrics, OpenTelemetry tracing, and the Kubernetes Events API --- and is described in detail in Section~\ref{sec:obs-design}, where it is presented alongside the traditional system's observability for direct comparison.
 
 \subsection{Deployment Configuration}
 
@@ -432,189 +393,54 @@ kubectl apply -f sub.yaml → etcd write → watch event → Reconcile() → sta
     \item Guaranteed cleanup even on controller failure
 \end{itemize}
 
-\section{Observability Design}
+\section{Observability Design}\label{sec:obs-design}
 
-Observability was implemented in both systems to enable comparative analysis of system behavior, with emphasis on business-level events rather than only infrastructure metrics.
+Both systems instrument the same three observability dimensions --- metrics, traces, and audit-style events --- but the underlying mechanisms differ, and that difference is the point of the comparison. Table~\ref{tab:obs-summary} consolidates what each system exposes; Chapter~\ref{chap:impl} contains the Go-level details (Listings~\ref{lst:metrics}, \ref{lst:tracing-init}, \ref{lst:tracing-use}, \ref{lst:backend-metrics}, \ref{lst:backend-tracing}).
 
-\subsection{Kubernetes System Observability}
+\begin{table}[h]
+\centering
+\small
+\caption{Observability surface of each system.}
+\label{tab:obs-summary}
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Dimension} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
+Business metrics &
+\texttt{billing\_subscriptions\_created\_total}, \texttt{billing\_subscriptions\_canceled\_total} (Counters) &
+\texttt{billing\_active\_subscriptions} (Gauge), \texttt{billing\_revenue\_total} (Counter), \texttt{billing\_payment\_failures} (Counter) \\
+Infrastructure metrics &
+HTTP latency histogram and request counter from \texttt{otelmux} &
+controller-runtime: \texttt{controller\_runtime\_reconcile\_total}, \texttt{controller\_runtime\_reconcile\_errors\_total}, \texttt{workqueue\_depth} \\
+Tracing surface &
+\texttt{otelmux} request spans + GORM SQL spans &
+\texttt{ReconcileSubscription} root span; \texttt{ProcessPayment} child; \texttt{MapPlanToSubscriptions} root for plan-driven reconciles \\
+OTLP endpoint &
+\texttt{localhost:4318} (Docker-Compose Jaeger) &
+\texttt{localhost:4318} by default; overridable via \texttt{OTEL\_EXPORTER\_OTLP\_ENDPOINT} \\
+Audit trail &
+Application logs only &
+Kubernetes Events API (\texttt{SubscriptionActivated}, \texttt{PaymentProcessed}, \texttt{PaymentFailed}, \texttt{FinalBilling}); accessible via \texttt{kubectl get events} \\
+Structured status &
+Implicit (database columns) &
+\texttt{metav1.Condition} array (\texttt{Active}, \texttt{BillingPlanNotFound}, \texttt{PaymentError}) with \texttt{reason} and \texttt{message} fields \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
-The Kubernetes-based system integrates three observability layers:
+Two qualitative differences are worth recording before the quantitative comparison in Chapter~\ref{chap:eval}. First, the operator's observability is symmetric between operators and tooling: \texttt{kubectl describe} surfaces the same Conditions and Events that a Grafana dashboard or a downstream Operator can react to, with no additional integration. The traditional backend's equivalent information lives in application logs and Prometheus, neither of which is queryable by name from another service without convention. Second, the operator's audit trail is bounded by Kubernetes Event retention (one hour by default), whereas the backend has no built-in trail at all; both require an external store for long-term retention.
 
-\subsubsection{Prometheus Metrics}
+\section{Evaluation Plan}
 
-Custom business metrics exposed at \texttt{:8080/metrics}:
-\begin{itemize}
-    \item \texttt{billing\_active\_subscriptions} (Gauge) --- current count of Active subscriptions
-    \item \texttt{billing\_revenue\_total} (Counter) --- cumulative revenue from successful billing cycles
-    \item \texttt{billing\_payment\_failures} (Counter) --- failed payment attempts (defined, not incremented)
-\end{itemize}
+The systems are evaluated along four axes, mirroring the structure that Chapter~\ref{chap:eval} follows.
 
-Standard controller-runtime metrics:
-\begin{itemize}
-    \item \texttt{controller\_runtime\_reconcile\_total} --- reconciliation attempts by result
-    \item \texttt{controller\_runtime\_reconcile\_errors\_total} --- error count
-    \item \texttt{workqueue\_depth} --- pending work items
-    \item \texttt{process\_cpu\_seconds}, \texttt{go\_memstats\_alloc\_bytes} --- runtime metrics
-\end{itemize}
+\begin{description}
+    \item[Code metrics.] Source-file count, lines of code (excluding tests), test coverage, direct and transitive dependency counts. These are static properties of the codebase that should be measurable rather than estimated.
+    \item[Performance.] End-to-end latency at p50, p95, and p99 for the four user-facing operations; throughput under concurrent load; microbenchmark results for isolated functions. The two systems are loaded with comparable concurrency rather than the apples-to-oranges sequential-vs-parallel framing used in earlier drafts; the construct mismatch between HTTP and reconcile-driven throughput is recorded as a validity threat in Section~\ref{sec:limitations}.
+    \item[Resource utilisation.] CPU (millicores) and resident memory (MB) at idle, under load, and at peak; startup time from process launch to readiness probe pass.
+    \item[Operational characteristics.] Scaling behaviour, fault tolerance under controlled disruption, and the observability surface enumerated in Table~\ref{tab:obs-summary}.
+\end{description}
 
-\subsubsection{OpenTelemetry Tracing}
-
-Span hierarchy for reconciliation:
-\begin{itemize}
-    \item \texttt{ReconcileSubscription} (root) --- entire reconciliation cycle
-    \item \texttt{ProcessPayment} (child) --- billing logic execution
-    \item \texttt{MapPlanToSubscriptions} (child) --- triggered by BillingPlan watch
-\end{itemize}
-
-Export: OTLP over HTTP to \texttt{localhost:4318} (Jaeger-compatible).
-
-\subsubsection{Kubernetes Events}
-
-Audit trail via Events API:
-\begin{itemize}
-    \item \texttt{Normal SubscriptionActivated} --- new subscription activated
-    \item \texttt{Normal PaymentProcessed} --- billing cycle completed
-    \item \texttt{Warning PaymentFailed} --- payment error
-    \item \texttt{Normal FinalBilling} --- final billing on deletion
-\end{itemize}
-
-\subsection{Traditional System Observability}
-
-The traditional system implements two-layer observability:
-
-\subsubsection{Prometheus Metrics}
-
-HTTP and business metrics at \texttt{/metrics}:
-\begin{itemize}
-    \item \texttt{billing\_subscriptions\_created\_total} (Counter)
-    \item \texttt{billing\_subscriptions\_cancelled\_total} (Counter)
-    \item \texttt{http\_request\_duration\_seconds} (Histogram) --- request latency
-    \item \texttt{http\_requests\_total} (Counter) --- request count by method/path
-\end{itemize}
-
-\subsubsection{OpenTelemetry Tracing}
-
-Integrated tracing for HTTP and database layers:
-\begin{itemize}
-    \item HTTP middleware (\texttt{otelmux}) --- traces request lifecycle
-    \item GORM plugin --- traces SQL queries (duration, statement, rows affected)
-\end{itemize}
-
-Export: OTLP over HTTP to Jaeger (\texttt{http://jaeger:4318}).
-
-\subsection{Comparative Analysis}
-
-The Kubernetes system provides richer business-level observability:
-\begin{itemize}
-    \item \textbf{Events} --- audit trail without custom logging
-    \item \textbf{Conditions} --- standardized state reporting in resource status
-    \item \textbf{Reconciliation metrics} --- visibility into control loop behavior
-\end{itemize}
-
-The traditional system provides simpler but more direct observability:
-\begin{itemize}
-    \item \textbf{HTTP metrics} --- immediate request/response visibility
-    \item \textbf{Database tracing} --- direct query-level insights
-\end{itemize}
-
-\section{Experimental Methodology}
-
-Experimental evaluation was conducted in a controlled local environment to compare the two architectural approaches across multiple dimensions.
-
-\subsection{Evaluation Environment}
-
-Both systems were deployed and tested on identical hardware. Full reproducibility details, including workload generator parameters and the number of repeated trials, are documented in Section~\ref{sec:reproducibility}.
-
-\begin{itemize}
-    \item \textbf{CPU}: Apple M3 (8 cores: 4 performance + 4 efficiency)
-    \item \textbf{RAM}: 8\,GB unified memory
-    \item \textbf{OS}: macOS 15.7.7 Sequoia (Darwin 24.6.0)
-    \item \textbf{Kubernetes}: Minikube v1.33.1 (for kube-billing)
-    \item \textbf{Docker}: Docker Desktop v27.5.0 (for backend-billing)
-\end{itemize}
-
-\subsection{Evaluation Metrics}
-
-The evaluation focuses on four categories:
-
-\subsubsection{Code Metrics (Lean Software Development)}
-
-\begin{itemize}
-    \item \textbf{Lines of Code (LOC)} --- total Go source lines (excluding tests)
-    \item \textbf{File count} --- number of Go source files
-    \item \textbf{Cyclomatic complexity} --- maximum complexity per function
-    \item \textbf{Test coverage} --- percentage of code covered by automated tests
-    \item \textbf{Dependencies} --- number of Go module dependencies
-\end{itemize}
-
-\subsubsection{Performance Metrics}
-
-\begin{itemize}
-    \item \textbf{Latency} --- p50, p95, p99 response times for CRUD operations
-    \item \textbf{Throughput} --- requests per second under load
-    \item \textbf{Resource usage} --- CPU (millicores) and memory (MB) consumption
-    \item \textbf{Startup time} --- time from launch to readiness
-\end{itemize}
-
-\subsubsection{Operational Metrics}
-
-\begin{itemize}
-    \item \textbf{Scaling} --- manual vs automatic (HPA)
-    \item \textbf{Fault tolerance} --- recovery from controller/database failure
-    \item \textbf{Deployment complexity} --- number of configuration files, steps
-\end{itemize}
-
-\subsubsection{Observability Coverage}
-
-\begin{itemize}
-    \item \textbf{Metrics count} --- number of custom business metrics
-    \item \textbf{Trace coverage} --- percentage of code paths traced
-    \item \textbf{Event/audit trail} --- presence of audit logging
-\end{itemize}
-
-\subsection{Benchmark Methodology}
-
-\subsubsection{Load Testing}
-
-\textbf{backend-billing}:
-\begin{lstlisting}[language=bash, caption={Load testing commands for backend-billing}, label={lst:load-backend}]
-hey -n 1000 -c 10 http://localhost:8080/plans
-hey -n 1000 -c 50 http://localhost:8080/subscriptions
-\end{lstlisting}
-
-\textbf{kube-billing}:
-\begin{lstlisting}[language=bash, caption={Load testing commands for kube-billing}, label={lst:load-kube}]
-for i in {1..1000}; do kubectl apply -f plan.yaml; done
-kubectl apply -f subscription.yaml (sequential, rate-limited)
-\end{lstlisting}
-
-\subsubsection{Resource Monitoring}
-
-\begin{itemize}
-    \item \textbf{backend-billing}: \texttt{docker stats}, Go \texttt{pprof}
-    \item \textbf{kube-billing}: \texttt{kubectl top pods}, Prometheus metrics
-\end{itemize}
-
-\subsubsection{Microbenchmarks}
-
-Go testing package for isolated function benchmarks:
-\begin{lstlisting}[language=bash, caption={Go microbenchmark commands}, label={lst:bench}]
-go test -bench=BenchmarkCreatePlan -benchmem
-go test -bench=BenchmarkValidatePlan -benchmem
-\end{lstlisting}
-
-\subsection{Threats to Validity}
-
-Several limitations affect the generalizability of results:
-
-\begin{itemize}
-    \item \textbf{Local environment} --- results may differ in production Kubernetes clusters with network latency and resource contention
-    \item \textbf{Single-node testing} --- no distributed system effects (network partitions, leader election)
-    \item \textbf{Simulated payments} --- no external payment gateway integration (latency, failures)
-    \item \textbf{Short test duration} --- no long-term etcd compaction or database bloat effects
-\end{itemize}
-
-Despite these limitations, the comparative analysis provides meaningful insights into architectural trade-offs.
+Reproducibility details --- tool versions, Minikube and Docker resource allocations, workload-generator parameters, number of repeated trials, warm-up windows, and raw-data location --- are recorded in Section~\ref{sec:reproducibility}. Threats to validity (construct mismatch, asymmetric lifecycle vocabularies, single hardware platform, short measurement horizon) are catalogued in Section~\ref{sec:limitations}.
 
 \section{Summary}
 

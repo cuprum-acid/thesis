@@ -8,7 +8,7 @@ Comprehensive evaluation was conducted across multiple dimensions: code metrics,
 
 The research contributes empirical evidence to the cloud-native architecture discourse, moving beyond anecdotal claims to data-driven decision making. A decision framework is provided for practitioners: the traditional approach is recommended for performance-critical, portable applications with simple deployment requirements; the Operator approach is suitable for organizations already invested in Kubernetes ecosystem that prioritize operational automation over raw performance.
 
-Both implementations are released as open-source, serving as reference architectures for similar projects. The findings suggest that while Kubernetes can effectively serve as a business logic platform, the choice between approaches should be guided by organizational context, team expertise, and specific business requirements rather than technological trends alone.
+Both implementations are released as open source and are presented as reference rather than production code; outstanding limitations (no payment-gateway integration, currency-agnostic revenue metric, single-replica worker, asymmetric lifecycle vocabularies between the two systems) are catalogued in the conclusion. The findings suggest that Kubernetes can serve as a viable business-logic platform when business workflows are naturally expressible as resource lifecycles, but that the latency-automation trade-off should be evaluated explicitly against organisational context, team expertise, and the specific shape of the workload, rather than treated as a technological default.
 
 \end{abstract}
 
@@ -22,6 +22,6 @@ Both implementations are released as open-source, serving as reference architect
 
 Исследование вносит эмпирические данные в дискуссию об облачных нативных архитектурах, переходя от анекдотических утверждений к обоснованным решениям. Предоставлена рамка принятия решений для практиков: традиционный подход рекомендуется для критичных к производительности приложений с простыми требованиями к развёртыванию; подход с Operator подходит для организаций, уже инвестирующих в экосистему Kubernetes и приоритизирующих операционную автоматизацию над производительностью.
 
-Обе реализации выпущены как open-source, служа референсными архитектурами для аналогичных проектов. Выводы показывают, что, хотя Kubernetes может эффективно служить платформой для бизнес-логики, выбор между подходами должен определяться организационным контекстом, экспертизой команды и конкретными бизнес-требованиями, а не только технологическими трендами.
+Обе реализации выпущены как open-source в качестве референсного, а не production-кода; остающиеся ограничения (отсутствие интеграции с платёжным шлюзом, отсутствие меток валюты в метрике выручки, отсутствие leader-election в фоновом воркере, асимметрия словарей состояний между двумя системами) систематизированы в заключении. Выводы показывают, что Kubernetes может служить жизнеспособной платформой для бизнес-логики, когда бизнес-процессы естественно выражаются через жизненный цикл ресурсов, но компромисс между задержкой и автоматизацией следует оценивать применительно к организационному контексту, экспертизе команды и конкретной форме нагрузки, а не принимать как технологическую данность.
 
 \end{abstract}
