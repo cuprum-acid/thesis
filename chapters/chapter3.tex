@@ -43,7 +43,44 @@ The implemented business logic includes:
     \item \textbf{Termination}: A subscription leaves the active state either because the user explicitly ends it or because the system detects a terminal condition (a missed billing deadline or a payment failure).
 \end{itemize}
 
-The two systems implement the same conceptual lifecycle but expose it through different mechanisms, and this asymmetry is itself a finding of the comparison. Table~\ref{tab:state-comparison} enumerates the observable states in each implementation.
+The two systems implement the same conceptual lifecycle but expose it through different mechanisms, and this asymmetry is itself a finding of the comparison. Figure~\ref{fig:state-machines} visualises the lifecycles side by side, and Table~\ref{tab:state-comparison} enumerates the observable states in each implementation.
+
+\begin{figure}[H]
+\centering
+\begin{subcaptionblock}{0.46\textwidth}\centering
+\begin{tikzpicture}[node distance=8mm and 10mm,
+    s/.style={rectangle, draw, rounded corners, minimum width=18mm, minimum height=7mm, align=center, font=\small, fill=blue!8},
+    arr/.style={-{Stealth[length=2mm]}, thick, font=\scriptsize}]
+    \node[s] (init) {(create)};
+    \node[s, below=of init] (act) {Active};
+    \node[s, below left=of act] (can) {Canceled};
+    \node[s, below right=of act] (exp) {Expired};
+    \draw[arr] (init) -- (act);
+    \draw[arr] (act) -- node[left] {POST /cancel} (can);
+    \draw[arr] (act) -- node[right] {worker} (exp);
+\end{tikzpicture}
+\caption{backend-billing}
+\end{subcaptionblock}\hfill
+\begin{subcaptionblock}{0.46\textwidth}\centering
+\begin{tikzpicture}[node distance=8mm and 10mm,
+    s/.style={rectangle, draw, rounded corners, minimum width=22mm, minimum height=7mm, align=center, font=\small, fill=green!8},
+    arr/.style={-{Stealth[length=2mm]}, thick, font=\scriptsize}]
+    \node[s] (init) {(create)};
+    \node[s, below=of init] (act) {Active};
+    \node[s, below left=of act] (pe) {PaymentError};
+    \node[s, below right=of act] (er) {Error};
+    \node[s, above right=4mm and 4mm of init, fill=red!12] (del) {(deletion)};
+    \draw[arr] (init) -- (act);
+    \draw[arr] (act) -- node[left] {parse / charge fail} (pe);
+    \draw[arr] (act) -- node[right] {plan missing} (er);
+    \draw[arr] (pe) .. controls +(up:8mm) and +(left:8mm) .. node[left] {retry ok} (act.west);
+    \draw[arr] (act) -- node[above, sloped] {kubectl delete + finalizer} (del);
+\end{tikzpicture}
+\caption{kube-billing}
+\end{subcaptionblock}
+\caption{Subscription state machines for the two implementations. Backend transitions are in-band (state column writes); operator transitions include both in-band Conditions and out-of-band lifecycle (deletion with finalizer).}
+\label{fig:state-machines}
+\end{figure}
 
 \begin{table}[h]
 \centering
@@ -92,7 +129,40 @@ The system implements a layered architecture with clear separation of concerns:
     \item \textbf{Middleware layer}: Rate limiting, panic recovery, tracing
 \end{itemize}
 
-The REST API exposes endpoints for billing plans and subscriptions. Business logic is implemented within HTTP handlers and repository methods, with explicit error handling and validation.
+The REST API exposes endpoints for billing plans and subscriptions. Business logic is implemented within HTTP handlers and repository methods, with explicit error handling and validation. Figure~\ref{fig:backend-arch} sketches the resulting deployment.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=8mm and 12mm,
+    box/.style={rectangle, draw, rounded corners, minimum width=24mm, minimum height=8mm, align=center, font=\small},
+    client/.style={box, fill=gray!10},
+    app/.style={box, fill=blue!8},
+    store/.style={box, fill=orange!10},
+    obs/.style={box, fill=green!10},
+    grp/.style={rectangle, draw, dashed, inner sep=3mm, rounded corners},
+    arr/.style={-{Stealth[length=2.5mm]}, thick}
+]
+    \node[client] (cli) {HTTP client};
+    \node[app, right=20mm of cli] (router) {Gorilla mux\\ + otelmux};
+    \node[app, below=of router] (handler) {Handlers};
+    \node[app, below=of handler] (repo) {Repository\\ (GORM)};
+    \node[store, right=of repo] (pg) {PostgreSQL};
+    \node[app, left=of repo] (worker) {Expiration\\ worker};
+    \node[obs, above=of router] (otel) {OTLP exporter\\ to Jaeger};
+    \node[obs, right=of router] (prom) {/metrics};
+
+    \draw[arr] (cli) -- (router);
+    \draw[arr] (router) -- (handler);
+    \draw[arr] (handler) -- (repo);
+    \draw[arr] (repo) -- (pg);
+    \draw[arr] (worker) -- (pg);
+    \draw[arr, dashed] (router.north) -- (otel.south);
+    \draw[arr, dashed] (router.east) -- (prom.west);
+\end{tikzpicture}
+\caption{backend-billing reference architecture. Solid arrows are control-flow / data-access; dashed arrows are observability exports. The expiration worker runs as a goroutine inside the same process and shares the GORM connection pool.}
+\label{fig:backend-arch}
+\end{figure>
 
 \subsection{Execution Model}
 
@@ -157,6 +227,43 @@ The experimental system is implemented using Kubernetes as a platform for busine
     \item \textbf{Testing}: Ginkgo v2 + Gomega + envtest (local API server)
     \item \textbf{E2E Testing}: Kind (Kubernetes in Docker)
 \end{itemize}
+
+\subsection{System Architecture}
+
+Figure~\ref{fig:kube-arch} sketches the kube-billing deployment. The user-facing surface is the Kubernetes API server; there is no application HTTP endpoint that clients connect to directly. The controller pod runs as a Deployment, watches both CRDs via informer caches, exposes \texttt{/metrics} for Prometheus scrape, and ships traces via OTLP to a sidecar collector.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=8mm and 12mm,
+    box/.style={rectangle, draw, rounded corners, minimum width=22mm, minimum height=8mm, align=center, font=\small},
+    user/.style={box, fill=gray!10},
+    api/.style={box, fill=blue!8},
+    ctrl/.style={box, fill=green!8},
+    store/.style={box, fill=orange!10},
+    obs/.style={box, fill=red!8},
+    grp/.style={rectangle, draw, dashed, inner sep=3mm, rounded corners},
+    arr/.style={-{Stealth[length=2.5mm]}, thick}
+]
+    \node[user] (kubectl) {kubectl /\\ Argo CD};
+    \node[api, right=of kubectl] (apisrv) {kube-apiserver\\ (admission)};
+    \node[store, right=of apisrv] (etcd) {etcd};
+    \node[ctrl, below=18mm of apisrv] (ctl) {Subscription\\ Reconciler};
+    \node[ctrl, left=of ctl] (informer) {Informer\\ cache};
+    \node[obs, right=of ctl] (metrics) {/metrics};
+    \node[obs, below=of ctl] (otel) {OTLP\\ exporter};
+
+    \draw[arr] (kubectl) -- node[above, font=\scriptsize] {YAML apply} (apisrv);
+    \draw[arr] (apisrv) -- (etcd);
+    \draw[arr] (apisrv.south) -- node[right, font=\scriptsize] {watch} (ctl.north);
+    \draw[arr] (informer) -- (ctl);
+    \draw[arr] (ctl.east) -- (metrics.west);
+    \draw[arr] (ctl.south) -- (otel.north);
+    \draw[arr] (ctl) .. controls +(right:16mm) and +(down:8mm) .. node[right, font=\scriptsize] {Status().Update} (apisrv.south east);
+\end{tikzpicture}
+\caption{kube-billing reference architecture. CRDs are stored in etcd through the API server; the controller's only persistent state is its in-memory informer cache, which is rebuilt from etcd on restart.}
+\label{fig:kube-arch}
+\end{figure}
 
 \subsection{Custom Resource Definitions}
 

@@ -20,7 +20,34 @@ The Kubernetes API is organized into API groups and versions, providing a struct
 
 \subsection{Controller Pattern and Reconciliation Loop}
 
-Kubernetes extensively uses the controller pattern for managing resources~\cite{controller_pattern, ibryam2020}. A controller watches for changes to resources of interest and takes actions to reconcile the actual state with the desired state specified in the resource definition. This reconciliation loop runs continuously, enabling self-healing and automated management capabilities~\cite{dobies2020}.
+Kubernetes extensively uses the controller pattern for managing resources~\cite{controller_pattern, ibryam2020}. A controller watches for changes to resources of interest and takes actions to reconcile the actual state with the desired state specified in the resource definition. This reconciliation loop runs continuously, enabling self-healing and automated management capabilities~\cite{dobies2020}. Figure~\ref{fig:controller-pattern} sketches the canonical control flow: a watch on the API server delivers events into the controller's work-queue; the reconciler dequeues an item, reads current spec and status from the API server, compares them to the desired state, makes any necessary changes (which themselves become API-server writes), and either schedules a future reconciliation through \texttt{RequeueAfter} or returns and waits for the next event.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=10mm and 14mm,
+    box/.style={rectangle, draw, rounded corners, minimum width=28mm, minimum height=9mm, align=center, font=\small},
+    api/.style={box, fill=blue!8},
+    ctrl/.style={box, fill=green!8},
+    queue/.style={box, fill=orange!10, minimum width=22mm},
+    arr/.style={-{Stealth[length=2.5mm]}, thick}
+]
+    \node[api] (apisrv) {API server\\ + etcd};
+    \node[ctrl, right=of apisrv] (watch) {Watch /\\ Informer};
+    \node[queue, right=of watch] (wq) {Work\\ queue};
+    \node[ctrl, below=of wq] (rec) {Reconcile()};
+    \node[ctrl, below=of watch] (cli) {client.Update\\ Status().Update};
+
+    \draw[arr] (apisrv) -- node[above, font=\scriptsize] {events} (watch);
+    \draw[arr] (watch) -- node[above, font=\scriptsize] {enqueue} (wq);
+    \draw[arr] (wq) -- node[right, font=\scriptsize] {dequeue} (rec);
+    \draw[arr] (rec) -- node[below, font=\scriptsize, sloped] {writes} (cli);
+    \draw[arr] (cli) -- node[left, font=\scriptsize] {API calls} (apisrv);
+    \draw[arr, dashed] (rec.east) .. controls +(right:14mm) and +(right:14mm) .. node[right, font=\scriptsize] {RequeueAfter} (wq.east);
+\end{tikzpicture}
+\caption{The controller pattern. Events from the API server flow through an in-memory informer cache and a rate-limited work-queue into the \texttt{Reconcile} function; writes go back to the API server through the same client. Repeated reconciliations are scheduled either by new events or by an explicit \texttt{RequeueAfter}, never by polling.}
+\label{fig:controller-pattern}
+\end{figure>
 
 Controllers operate independently and asynchronously, communicating only through the Kubernetes API server. This architectural pattern enables high scalability and resilience, as controllers can be distributed across multiple instances and automatically recover from failures~\cite{hausenblas2019}. The controller pattern has become a fundamental building block for cloud-native applications and is extensively covered in Kubernetes design patterns literature~\cite{ibryam2020}.
 
