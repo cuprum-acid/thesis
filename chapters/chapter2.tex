@@ -47,7 +47,7 @@ Kubernetes extensively uses the controller pattern for managing resources~\cite{
 \end{tikzpicture}
 \caption{The controller pattern. Events from the API server flow through an in-memory informer cache and a rate-limited work-queue into the \texttt{Reconcile} function; writes go back to the API server through the same client. Repeated reconciliations are scheduled either by new events or by an explicit \texttt{RequeueAfter}, never by polling.}
 \label{fig:controller-pattern}
-\end{figure>
+\end{figure}
 
 Controllers operate independently and asynchronously, communicating only through the Kubernetes API server. This architectural pattern enables high scalability and resilience, as controllers can be distributed across multiple instances and automatically recover from failures~\cite{hausenblas2019}. The controller pattern has become a fundamental building block for cloud-native applications and is extensively covered in Kubernetes design patterns literature~\cite{ibryam2020}.
 

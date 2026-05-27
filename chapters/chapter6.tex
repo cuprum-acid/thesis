@@ -25,7 +25,7 @@ Both systems implement identical business logic (billing plan management, subscr
     \item \textbf{Implementing a reconcile loop}: the operator continuously compares spec vs status and applies changes to converge toward desired state, via the controller-runtime library~\cite{controller_runtime, kubebuilder}.
     \item \textbf{Leveraging Kubernetes primitives}: finalizers for cleanup that survives controller restart, \texttt{metav1.Condition} arrays for multi-dimensional state reporting~\cite{k8s_api_conventions}, and the Kubernetes Events API for a structured audit trail.
     \item \textbf{Using admission control}: CRD validation markers enforce business rules at the API boundary~\cite{crd_features}, replacing the runtime-validation step that a REST handler would have to write by hand.
-\end{enumerate>
+\end{enumerate}
 
 The key insight is that business logic becomes a \textit{control problem} rather than a \textit{computation problem}: the Operator acts as an automated control system that maintains system state according to business rules.
 

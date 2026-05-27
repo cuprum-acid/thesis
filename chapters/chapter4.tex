@@ -29,24 +29,24 @@ The Kubernetes-based system was implemented using Kubebuilder v4.13.0~\cite{kube
 
 \begin{lstlisting}[caption={kube-billing project structure}, label={lst:kube-structure}]
 kube-billing/
-├── cmd/main.go                 # Entry point, manager setup
-├── api/v1alpha1/
-│   ├── billingplan_types.go    # BillingPlan CRD spec/status
-│   ├── subscription_types.go   # Subscription CRD spec/status
-│   └── groupversion_info.go    # GroupVersion for scheme
-├── internal/controller/
-│   ├── subscription_controller.go # Reconcile logic
-│   ├── metrics.go              # Prometheus metrics
-│   └── tracing.go              # OpenTelemetry setup
-├── config/
-│   ├── crd/bases/              # Generated CRD YAML
-│   ├── rbac/                   # ServiceAccount, Role, RoleBinding
-│   ├── manager/                # Deployment manifest
-│   ├── samples/                # Example CRs
-│   └── default/                # Kustomize overlay (HPA, PDB)
-├── test/e2e/                   # E2E tests with Kind
-├── Makefile                    # Build, test, deploy targets
-└── Dockerfile                  # Multi-stage build
+|-- cmd/main.go                 # Entry point, manager setup
+|-- api/v1alpha1/
+|   |-- billingplan_types.go    # BillingPlan CRD spec/status
+|   |-- subscription_types.go   # Subscription CRD spec/status
+|   \-- groupversion_info.go    # GroupVersion for scheme
+|-- internal/controller/
+|   |-- subscription_controller.go # Reconcile logic
+|   |-- metrics.go              # Prometheus metrics
+|   \-- tracing.go              # OpenTelemetry setup
+|-- config/
+|   |-- crd/bases/              # Generated CRD YAML
+|   |-- rbac/                   # ServiceAccount, Role, RoleBinding
+|   |-- manager/                # Deployment manifest
+|   |-- samples/                # Example CRs
+|   \-- default/                # Kustomize overlay (HPA, PDB)
+|-- test/e2e/                   # E2E tests with Kind
+|-- Makefile                    # Build, test, deploy targets
+\-- Dockerfile                  # Multi-stage build
 \end{lstlisting}
 
 \subsection{CRD Implementation}
@@ -195,7 +195,33 @@ The core business logic resides in \texttt{SubscriptionReconciler} (\texttt{inte
 
 \subsubsection{Reconcile Method}
 
-Listing~\ref{lst:reconcile-pseudocode} shows the reconciliation workflow as pseudocode; Listing~\ref{lst:reconcile-go} reproduces the corresponding Go code extracted from \texttt{internal/controller/subscription\_controller.go}. The pseudocode is included because the deletion branch (Step~2) embeds the entire pro-rated refund computation, which obscures the high-level flow when read directly from the source.
+Figure~\ref{fig:reconcile-seq} shows the end-to-end flow of a single subscription creation as a sequence diagram, from the moment the user applies the YAML to the moment the controller writes the first \texttt{Active} status. Listing~\ref{lst:reconcile-pseudocode} shows the reconciliation workflow as pseudocode; Listing~\ref{lst:reconcile-go} reproduces the corresponding Go code extracted from \texttt{internal/controller/subscription\_controller.go}. The pseudocode is included because the deletion branch (Step~2) embeds the entire pro-rated refund computation, which obscures the high-level flow when read directly from the source.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=14mm,
+    actor/.style={rectangle, draw, rounded corners, minimum width=22mm, minimum height=7mm, align=center, font=\small, fill=blue!8},
+    arr/.style={-{Stealth[length=2.5mm]}, thick, font=\scriptsize},
+    msg/.style={font=\scriptsize, align=left}
+]
+    \node[actor] (u)   {User (kubectl)};
+    \node[actor, right=of u]   (api) {kube-apiserver};
+    \node[actor, right=of api] (etcd){etcd};
+    \node[actor, right=of etcd](ctl) {Reconciler};
+
+    \draw[arr] (u) -- (api)  node[midway, above, msg] {1. apply Subscription};
+    \draw[arr] (api) -- (etcd) node[midway, above, msg] {2. write\\(resourceVersion)};
+    \draw[arr, dashed] (api.south) .. controls +(down:6mm) and +(down:6mm) .. (ctl.south)
+        node[midway, below, msg] {3. watch event};
+    \draw[arr] (ctl) -- ($(ctl)+(0,-12mm)$) node[right, msg] {4. add finalizer; Update};
+    \draw[arr] (ctl) -- ($(ctl)+(0,-20mm)$) node[right, msg] {5. Get BillingPlan};
+    \draw[arr] (ctl) -- ($(ctl)+(0,-28mm)$) node[right, msg] {6. set state = Active,\\\hphantom{6. }set Conditions,\\\hphantom{6. }Status().Update};
+    \draw[arr] (ctl) -- ($(ctl)+(0,-38mm)$) node[right, msg] {7. RequeueAfter\\\hphantom{7. }(at NextBilling)};
+\end{tikzpicture}
+\caption{Sequence of a single subscription creation. Steps 1--2 are synchronous from the user's perspective and complete in tens of milliseconds; step 3 is the watch event delivered to the reconciler asynchronously; steps 4--7 happen inside the reconciler over the next reconcile cycle. The diagram is simplified: every \texttt{Update} and \texttt{Status().Update} is itself a round-trip through the API server and etcd.}
+\label{fig:reconcile-seq}
+\end{figure}
 
 \begin{lstlisting}[language=Go, caption={Reconciliation workflow as pseudocode}, label={lst:reconcile-pseudocode}]
 function Reconcile(ctx, req):
@@ -596,37 +622,37 @@ The traditional backend follows a layered architecture:
 
 \begin{lstlisting}[caption={backend-billing project structure}, label={lst:backend-structure}]
 backend-billing/
-├── main.go                     # Entry point, router setup
-├── config/
-│   ├── config.go              # Viper configuration
-│   └── prometheus.yml         # Prometheus scrape config
-├── db/
-│   └── db.go                  # GORM initialization, migrations
-├── handlers/
-│   ├── plan_handlers.go       # HTTP handlers for BillingPlan
-│   ├── subscription_handlers.go # HTTP handlers for Subscription
-│   └── health_handlers.go     # Health check endpoints
-├── middleware/
-│   ├── rate_limiter.go        # Token bucket rate limiting
-│   └── recovery.go            # Panic recovery
-├── models/
-│   └── models.go              # GORM models
-├── repository/
-│   ├── repository.go          # Repository interfaces
-│   ├── plan_repository.go     # Plan CRUD operations
-│   └── subscription_repository.go # Subscription CRUD
-├── workers/
-│   └── workers.go             # Background expiration checker
-├── validator/
-│   └── validator.go           # Custom validation rules
-├── apierrors/
-│   └── errors.go              # Typed API errors
-├── observability/
-│   └── setup.go               # Logger and tracer setup
-├── tests/
-│   ├── integration/           # Integration tests (testcontainers)
-│   └── e2e/                   # E2E tests (full HTTP scenarios)
-└── docker-compose.yml         # PostgreSQL, Jaeger, Prometheus
+|-- main.go                     # Entry point, router setup
+|-- config/
+|   |-- config.go              # Viper configuration
+|   \-- prometheus.yml         # Prometheus scrape config
+|-- db/
+|   \-- db.go                  # GORM initialization, migrations
+|-- handlers/
+|   |-- plan_handlers.go       # HTTP handlers for BillingPlan
+|   |-- subscription_handlers.go # HTTP handlers for Subscription
+|   \-- health_handlers.go     # Health check endpoints
+|-- middleware/
+|   |-- rate_limiter.go        # Token bucket rate limiting
+|   \-- recovery.go            # Panic recovery
+|-- models/
+|   \-- models.go              # GORM models
+|-- repository/
+|   |-- repository.go          # Repository interfaces
+|   |-- plan_repository.go     # Plan CRUD operations
+|   \-- subscription_repository.go # Subscription CRUD
+|-- workers/
+|   \-- workers.go             # Background expiration checker
+|-- validator/
+|   \-- validator.go           # Custom validation rules
+|-- apierrors/
+|   \-- errors.go              # Typed API errors
+|-- observability/
+|   \-- setup.go               # Logger and tracer setup
+|-- tests/
+|   |-- integration/           # Integration tests (testcontainers)
+|   \-- e2e/                   # E2E tests (full HTTP scenarios)
+\-- docker-compose.yml         # PostgreSQL, Jaeger, Prometheus
 \end{lstlisting}
 
 \subsection{Data Models}
@@ -805,7 +831,7 @@ Two observations are worth recording because both surface in the comparative dis
 \begin{itemize}
 \item The custom \texttt{currency}, \texttt{billing\_period}, and \texttt{price} validators are registered but no struct tag uses them; the validators are effectively dead code. The CRD schema, by contrast, enforces currency and billing-period enums at admission time. The mismatch is a concrete example of how the two systems differ in where validation lives: at the API boundary in Kubernetes, in handler-resident code in the traditional design.
 \item The accepted currency sets are not identical (the backend lacks \texttt{JPY} and \texttt{CNY}, which the CRD includes). The asymmetry is a real divergence between the two implementations and is reported as a caveat rather than silently aligned.
-\end{itemize>
+\end{itemize}
 
 \subsection{Observability}
 

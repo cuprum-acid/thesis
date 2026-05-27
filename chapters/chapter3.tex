@@ -162,7 +162,7 @@ The REST API exposes endpoints for billing plans and subscriptions. Business log
 \end{tikzpicture}
 \caption{backend-billing reference architecture. Solid arrows are control-flow / data-access; dashed arrows are observability exports. The expiration worker runs as a goroutine inside the same process and shares the GORM connection pool.}
 \label{fig:backend-arch}
-\end{figure>
+\end{figure}
 
 \subsection{Execution Model}
 
@@ -461,12 +461,12 @@ Configuration & Environment variables + YAML & ConfigMap + Secrets \\ \bottomrul
 
 \textbf{backend-billing} follows imperative execution:
 \begin{lstlisting}[language=bash, caption={Traditional REST API request flow}, label={lst:rest-flow}]
-POST /subscriptions → validate → INSERT → 201 Created
+POST /subscriptions -> validate -> INSERT -> 201 Created
 \end{lstlisting}
 
 \textbf{kube-billing} follows declarative reconciliation:
 \begin{lstlisting}[language=bash, caption={Kubernetes Operator reconciliation flow}, label={lst:k8s-flow}]
-kubectl apply -f sub.yaml → etcd write → watch event → Reconcile() → status update
+kubectl apply -f sub.yaml -> etcd write -> watch event -> Reconcile() -> status update
 \end{lstlisting}
 
 \subsection{Time-Based Logic}
@@ -489,14 +489,14 @@ kubectl apply -f sub.yaml → etcd write → watch event → Reconcile() → sta
 
 \textbf{backend-billing} deletes immediately:
 \begin{itemize}
-    \item \texttt{DELETE /subscriptions/\{id\}} → soft delete (deleted\_at timestamp)
+    \item \texttt{DELETE /subscriptions/\{id\}} $\to$ soft delete (\texttt{deleted\_at} timestamp)
     \item No cleanup hook execution guarantee
 \end{itemize}
 
 \textbf{kube-billing} uses finalizers:
 \begin{itemize}
-    \item \texttt{kubectl delete} → DeletionTimestamp set → finalizer blocks deletion
-    \item Reconciler executes final billing → removes finalizer → Kubernetes deletes
+    \item \texttt{kubectl delete} $\to$ \texttt{DeletionTimestamp} set $\to$ finalizer blocks deletion
+    \item Reconciler executes final billing $\to$ removes finalizer $\to$ Kubernetes deletes
     \item Guaranteed cleanup even on controller failure
 \end{itemize}
 
@@ -535,6 +535,43 @@ Implicit (database columns) &
 \end{table}
 
 Two qualitative differences are worth recording before the quantitative comparison in Chapter~\ref{chap:eval}. First, the operator's observability is symmetric between operators and tooling: \texttt{kubectl describe} surfaces the same Conditions and Events that a Grafana dashboard or a downstream Operator can react to, with no additional integration. The traditional backend's equivalent information lives in application logs and Prometheus, neither of which is queryable by name from another service without convention. Second, the operator's audit trail is bounded by Kubernetes Event retention (one hour by default), whereas the backend has no built-in trail at all; both require an external store for long-term retention.
+
+Figure~\ref{fig:obs-pipeline} sketches the observability data paths for both systems on a single page so the audit-trail asymmetry is visible at a glance.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=8mm and 14mm,
+    box/.style={rectangle, draw, rounded corners, minimum width=22mm, minimum height=7mm, align=center, font=\small},
+    app/.style={box, fill=blue!8},
+    ctrl/.style={box, fill=green!8},
+    sink/.style={box, fill=orange!10},
+    api/.style={box, fill=red!8},
+    arr/.style={-{Stealth[length=2.5mm]}, thick}
+]
+    \node[app] (be) {backend-billing};
+    \node[sink, right=of be] (beprom) {Prometheus};
+    \node[sink, below=of beprom] (bejg)  {Jaeger};
+    \node[box, fill=gray!5, below=of be] (belog) {application logs\\(stdout)};
+
+    \node[ctrl, below=20mm of belog] (kb) {kube-billing\\controller};
+    \node[sink, right=of kb] (kbprom) {Prometheus};
+    \node[sink, below=of kbprom] (kbjg) {Jaeger};
+    \node[api, right=of kbprom] (events) {Kubernetes\\Events API};
+    \node[api, below=of events] (cond)  {Conditions\\on the CR};
+
+    \draw[arr] (be) -- node[above, font=\scriptsize] {/metrics} (beprom);
+    \draw[arr] (be) -- node[above, sloped, font=\scriptsize] {OTLP} (bejg);
+    \draw[arr] (be) -- (belog);
+
+    \draw[arr] (kb) -- node[above, font=\scriptsize] {/metrics} (kbprom);
+    \draw[arr] (kb) -- node[above, sloped, font=\scriptsize] {OTLP} (kbjg);
+    \draw[arr] (kb) -- node[above, sloped, font=\scriptsize] {Events API} (events);
+    \draw[arr] (kb) -- node[below, sloped, font=\scriptsize] {Status().Update} (cond);
+\end{tikzpicture}
+\caption{Observability data paths. Both systems push metrics to Prometheus and traces to Jaeger over OTLP; the operator additionally writes structured audit records to the Kubernetes Events API and updates typed Conditions on the resource itself, neither of which has a direct equivalent in the traditional stack.}
+\label{fig:obs-pipeline}
+\end{figure}
 
 \section{Evaluation Plan}
 
