@@ -153,74 +153,161 @@ The core business logic resides in \texttt{SubscriptionReconciler} (\texttt{inte
 
 \subsubsection{Reconcile Method}
 
-The \texttt{Reconcile} method implements the 6-step workflow:
+Listing~\ref{lst:reconcile-pseudocode} shows the reconciliation workflow as pseudocode; Listing~\ref{lst:reconcile-go} reproduces the corresponding Go code extracted from \texttt{internal/controller/subscription\_controller.go}. The pseudocode is included because the deletion branch (Step~2) embeds the entire pro-rated refund computation, which obscures the high-level flow when read directly from the source.
 
-\begin{lstlisting}[language=Go]
-func (r *SubscriptionReconciler) Reconcile(ctx context.Context, 
+\begin{lstlisting}[language=Go, caption={Reconciliation workflow as pseudocode}, label={lst:reconcile-pseudocode}]
+function Reconcile(ctx, req):
+    sub <- Get(Subscription, req.NamespacedName)
+    if sub not found: return done           # ignored: deletion already happened
+
+    if sub.DeletionTimestamp is set:
+        if sub has finalizer:
+            run pro-rated refund (if plan and NextBilling permit)
+            emit FinalBilling event
+            remove finalizer
+            update parent BillingPlan status
+        return done
+
+    if sub has no finalizer:
+        add finalizer; persist; return     # one extra reconcile pass
+
+    plan <- Get(BillingPlan, sub.Spec.PlanRef)
+    if plan not found:
+        set state = "Error"
+        set condition BillingPlanNotFound = True
+        increment payment-failures metric
+        requeue after 1 minute
+        return
+
+    if sub.Status.State == "":              # first reconciliation
+        activate: state = "Active",
+                  LastPayment = now,
+                  NextBilling = now + RequeueIntervalSeconds
+        set condition Active = True, BillingPlanNotFound = False
+        update parent BillingPlan status
+        requeue at NextBilling
+
+    if state == "Active" and now > NextBilling:
+        price <- ParseFloat(plan.Spec.Price)
+        if parse fails:
+            state = "PaymentError"; condition PaymentError = True
+            increment payment-failures metric; requeue in 5 minutes
+        else:
+            add price to revenue-total counter
+            advance LastPayment / NextBilling; clear PaymentError
+            emit PaymentProcessed event
+            requeue at next NextBilling
+\end{lstlisting}
+
+\begin{lstlisting}[language=Go, caption={Top-level reconcile body (extract from \texttt{subscription\_controller.go})}, label={lst:reconcile-go}]
+func (r *SubscriptionReconciler) Reconcile(ctx context.Context,
     req ctrl.Request) (ctrl.Result, error) {
-    
-    // Step 1: Fetch Subscription
-    var sub Subscription
+
+    ctx, span := Tracer.Start(ctx, "ReconcileSubscription")
+    defer span.End()
+
+    var sub billingv1alpha1.Subscription
     if err := r.Get(ctx, req.NamespacedName, &sub); err != nil {
         return ctrl.Result{}, client.IgnoreNotFound(err)
     }
-    
-    // Step 2: Handle deletion
+
     if !sub.DeletionTimestamp.IsZero() {
-        return r.handleDeletion(ctx, &sub)
+        return r.handleDeletion(ctx, &sub, req.Namespace)
     }
-    
-    // Step 3: Add finalizer
-    if !controllerutil.ContainsFinalizer(&sub, FinalizerName) {
-        controllerutil.AddFinalizer(&sub, FinalizerName)
-        return r.Update(ctx, &sub)
+
+    if !controllerutil.ContainsFinalizer(&sub, SubscriptionFinalizer) {
+        controllerutil.AddFinalizer(&sub, SubscriptionFinalizer)
+        if err := r.Update(ctx, &sub); err != nil {
+            return ctrl.Result{}, err
+        }
+        return ctrl.Result{}, nil
     }
-    
-    // Step 4: Validate BillingPlan
-    plan, err := r.getPlan(ctx, sub.Spec.PlanRef)
-    if err != nil {
-        return r.setErrorCondition(ctx, &sub, err)
+
+    var plan billingv1alpha1.BillingPlan
+    if err := r.Get(ctx, types.NamespacedName{
+        Name: sub.Spec.PlanRef, Namespace: req.Namespace,
+    }, &plan); err != nil {
+        sub.Status.State = SubscriptionStateError
+        PaymentFailures.Inc()
+        meta.SetStatusCondition(&sub.Status.Conditions, metav1.Condition{
+            Type:    billingv1alpha1.SubscriptionBillingPlanNotFound,
+            Status:  metav1.ConditionTrue,
+            Reason:  "BillingPlanNotFound",
+            Message: fmt.Sprintf("Referenced BillingPlan %q does not exist",
+                sub.Spec.PlanRef),
+        })
+        _ = r.Status().Update(ctx, &sub)
+        return ctrl.Result{RequeueAfter: time.Minute}, nil
     }
-    
-    // Step 5: Initialize if new
+
     if sub.Status.State == "" {
-        return r.activateSubscription(ctx, &sub, plan)
+        return r.activate(ctx, &sub, &plan, req.Namespace)
     }
-    
-    // Step 6: Process billing cycle
-    if sub.Status.State == StateActive && time.Now().After(sub.Status.NextBilling.Time) {
-        return r.processPayment(ctx, &sub, plan)
+    if sub.Status.State == SubscriptionStateActive {
+        return r.billIfDue(ctx, &sub, &plan, req.Namespace)
     }
-    
-    return ctrl.Result{RequeueAfter: time.Duration(plan.Spec.RequeueIntervalSeconds) * time.Second}, nil
+    return ctrl.Result{}, nil
 }
 \end{lstlisting}
 
-\subsubsection{Finalizer Handling}
+The real source inlines \texttt{activate} and \texttt{billIfDue} into one body of roughly 270 lines; Listing~\ref{lst:reconcile-go} is reorganised for clarity but preserves the control flow, return types, and side-effects of the original.
 
-The finalizer \texttt{billing.cloud-native.io/finalizer} ensures safe deletion:
+\subsubsection{Finalizer Handling and Pro-Rated Refund}
 
-\begin{lstlisting}[language=Go]
-func (r *SubscriptionReconciler) handleDeletion(ctx context.Context, 
-    sub *Subscription) (ctrl.Result, error) {
-    
-    // Execute final billing (pro-rated refund)
-    // TODO: Implement refund calculation
-    
-    // Remove finalizer
-    controllerutil.RemoveFinalizer(sub, FinalizerName)
-    return ctrl.Result{}, r.Update(ctx, sub)
+The finalizer \texttt{billing.cloud-native.io/finalizer} blocks resource removal until the controller has had a chance to compute the refund and decrement the active-subscription gauge. The full deletion path is reproduced in Listing~\ref{lst:finalizer}.
+
+\begin{lstlisting}[language=Go, caption={Deletion branch with pro-rated refund (extract)}, label={lst:finalizer}]
+func (r *SubscriptionReconciler) handleDeletion(ctx context.Context,
+    sub *billingv1alpha1.Subscription, namespace string) (ctrl.Result, error) {
+
+    if !controllerutil.ContainsFinalizer(sub, SubscriptionFinalizer) {
+        return ctrl.Result{}, nil
+    }
+
+    if sub.Status.State == SubscriptionStateActive {
+        ActiveSubscriptions.Dec()
+    }
+
+    var plan billingv1alpha1.BillingPlan
+    if err := r.Get(ctx, types.NamespacedName{
+        Name: sub.Spec.PlanRef, Namespace: namespace,
+    }, &plan); err == nil && !sub.Status.NextBilling.IsZero() {
+        now := time.Now()
+        if now.Before(sub.Status.NextBilling.Time) {
+            remaining := sub.Status.NextBilling.Time.Sub(now)
+            period := time.Duration(plan.Spec.RequeueIntervalSeconds) * time.Second
+            if price, err := strconv.ParseFloat(plan.Spec.Price, 64); err == nil &&
+                period > 0 && remaining > 0 {
+                refund := price * remaining.Seconds() / period.Seconds()
+                if refund > 0 {
+                    r.Recorder.Event(sub, "Normal", "FinalBilling",
+                        fmt.Sprintf("Refund of %.2f %s (pro-rated)",
+                            refund, plan.Spec.Currency))
+                }
+            }
+        }
+    }
+
+    controllerutil.RemoveFinalizer(sub, SubscriptionFinalizer)
+    if err := r.Update(ctx, sub); err != nil {
+        return ctrl.Result{}, err
+    }
+    _ = r.updateBillingPlanStatus(ctx, sub.Spec.PlanRef, namespace)
+    return ctrl.Result{}, nil
 }
 \end{lstlisting}
+
+The refund computation is intentionally idempotent: deletion may be retried by the controller after a transient failure, and the function reads only state that does not change between attempts. The emitted Kubernetes \texttt{FinalBilling} event provides an audit trail of the refund amount and currency without requiring a separate logging pipeline.
 
 \subsubsection{Watches and Event Mapping}
 
-The controller watches both Subscriptions and BillingPlans:
+The controller treats \texttt{Subscription} as its primary resource and \texttt{BillingPlan} as a secondary watch source: whenever a \texttt{BillingPlan} changes, every \texttt{Subscription} in the same namespace that references it is enqueued for reconciliation. Listing~\ref{lst:setup} shows the manager wiring and the mapping function as they appear in the source.
 
-\begin{lstlisting}[language=Go]
+\begin{lstlisting}[language=Go, caption={Manager setup and BillingPlan-to-Subscription mapping}, label={lst:setup}]
 func (r *SubscriptionReconciler) SetupWithManager(mgr ctrl.Manager) error {
     return ctrl.NewControllerManagedBy(mgr).
         For(&billingv1alpha1.Subscription{}).
+        Named("subscription").
         Watches(
             &billingv1alpha1.BillingPlan{},
             handler.EnqueueRequestsFromMapFunc(r.mapPlanToSubscriptions),
@@ -228,86 +315,104 @@ func (r *SubscriptionReconciler) SetupWithManager(mgr ctrl.Manager) error {
         Complete(r)
 }
 
-func (r *SubscriptionReconciler) mapPlanToSubscriptions(ctx context.Context, 
+func (r *SubscriptionReconciler) mapPlanToSubscriptions(ctx context.Context,
     obj client.Object) []reconcile.Request {
-    
+
     plan := obj.(*billingv1alpha1.BillingPlan)
-    var subs SubscriptionList
-    r.List(ctx, &subs, client.MatchingFields{"spec.planRef": plan.Name})
-    
+
+    var subs billingv1alpha1.SubscriptionList
+    if err := r.List(ctx, &subs, client.InNamespace(plan.Namespace)); err != nil {
+        return nil
+    }
+
     var requests []reconcile.Request
     for _, sub := range subs.Items {
-        requests = append(requests, reconcile.Request{
-            NamespacedName: types.NamespacedName{
-                Namespace: sub.Namespace,
-                Name:      sub.Name,
-            },
-        })
+        if sub.Spec.PlanRef == plan.Name {
+            requests = append(requests, reconcile.Request{
+                NamespacedName: types.NamespacedName{
+                    Name: sub.Name, Namespace: sub.Namespace,
+                },
+            })
+        }
     }
     return requests
 }
 \end{lstlisting}
 
+The mapping function performs a namespace-scoped list and filters by \texttt{spec.planRef} in memory rather than via a field-indexer. For the workload sizes evaluated in Chapter~\ref{chap:eval} this is acceptable; in deployments with thousands of subscriptions per namespace a custom \texttt{client.IndexField} on \texttt{spec.planRef} should be added to avoid an O(N) scan per plan change.
+
 \subsection{Metrics Implementation}
 
-Custom Prometheus metrics are defined in \texttt{internal/controller/metrics.go}:
+Custom Prometheus metrics are defined in \texttt{internal/controller/metrics.go} and registered against the controller-runtime metrics registry so they are served from the same endpoint as the standard reconciliation metrics. Listing~\ref{lst:metrics} reproduces the file verbatim.
 
-\begin{lstlisting}[language=Go]
+\begin{lstlisting}[language=Go, caption={Custom Prometheus metrics}, label={lst:metrics}]
 var (
-    activeSubscriptions = prometheus.NewGauge(prometheus.GaugeOpts{
+    ActiveSubscriptions = prometheus.NewGauge(prometheus.GaugeOpts{
         Name: "billing_active_subscriptions",
-        Help: "Current number of active subscriptions",
+        Help: "Number of active subscriptions",
     })
-    
-    revenueTotal = prometheus.NewCounter(prometheus.CounterOpts{
+
+    RevenueTotal = prometheus.NewCounter(prometheus.CounterOpts{
         Name: "billing_revenue_total",
-        Help: "Total revenue processed",
+        Help: "Total revenue processed by billing",
     })
-    
-    paymentFailures = prometheus.NewCounter(prometheus.CounterOpts{
+
+    PaymentFailures = prometheus.NewCounter(prometheus.CounterOpts{
         Name: "billing_payment_failures",
-        Help: "Number of failed payment attempts",
+        Help: "Number of failed payments",
     })
 )
 
 func init() {
-    reg.MustRegister(activeSubscriptions, revenueTotal, paymentFailures)
+    metrics.Registry.MustRegister(ActiveSubscriptions)
+    metrics.Registry.MustRegister(RevenueTotal)
+    metrics.Registry.MustRegister(PaymentFailures)
 }
 \end{lstlisting}
 
-Metrics are exposed at \texttt{:8080/metrics} and scraped by Prometheus via \texttt{ServiceMonitor}.
+\texttt{billing\_active\_subscriptions} is incremented on first activation and decremented in the finalizer; \texttt{billing\_revenue\_total} accumulates each successful billing cycle in the plan's price units (the metric is a single dimensionless counter, so revenue across different currencies is not separated --- a limitation acknowledged in Chapter~\ref{chap:conclusion}); \texttt{billing\_payment\_failures} is incremented when the plan cannot be resolved or its price fails to parse. Metrics are exposed at \texttt{:8443/metrics} via the metrics-service overlay and scraped by Prometheus through a \texttt{ServiceMonitor} resource.
 
 \subsection{Tracing Implementation}
 
-OpenTelemetry tracing is initialized in \texttt{internal/controller/tracing.go}:
+OpenTelemetry tracing is initialised in \texttt{internal/controller/tracing.go} (Listing~\ref{lst:tracing-init}). A package-level \texttt{Tracer} is declared at file scope so that reconciler code can start spans without re-resolving the global provider on every call.
 
-\begin{lstlisting}[language=Go]
-func InitTracer(ctx context.Context) (func(), error) {
+\begin{lstlisting}[language=Go, caption={Tracer initialisation}, label={lst:tracing-init}]
+var Tracer = otel.Tracer("kube-billing")
+
+func InitTracer() func() {
+    ctx := context.Background()
+
+    endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if endpoint == "" {
+        endpoint = "localhost:4318"
+    }
+
     exporter, err := otlptracehttp.New(ctx,
-        otlptracehttp.WithEndpoint("localhost:4318"),
+        otlptracehttp.WithEndpoint(endpoint),
         otlptracehttp.WithInsecure(),
     )
-    
-    tp := trace.NewTracerProvider(
-        trace.WithBatcher(exporter),
-        trace.WithResource(resource.NewWithAttributes(
-            semconv.ServiceNameKey.String("kube-billing"),
-        )),
-    )
-    
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    tp := trace.NewTracerProvider(trace.WithBatcher(exporter))
     otel.SetTracerProvider(tp)
-    return func() { tp.Shutdown(ctx) }, nil
+
+    return func() { _ = tp.Shutdown(ctx) }
 }
 \end{lstlisting}
 
-Spans are created in the reconcile loop:
-\begin{lstlisting}[language=Go]
-ctx, span := otel.Tracer("kube-billing").Start(ctx, "ReconcileSubscription")
+The reconciler creates three span types per cycle, forming the hierarchy shown in Listing~\ref{lst:tracing-use}: \texttt{ReconcileSubscription} (root), \texttt{ProcessPayment} (child, opened only when a billing cycle actually fires), and \texttt{MapPlanToSubscriptions} (root span for plan-change-driven reconciles).
+
+\begin{lstlisting}[language=Go, caption={Span creation inside the reconciler}, label={lst:tracing-use}]
+// Root span for each reconciliation call
+ctx, span := Tracer.Start(ctx, "ReconcileSubscription")
 defer span.End()
 
-// Payment processing span
-_, paymentSpan := otel.Tracer("kube-billing").Start(ctx, "ProcessPayment")
-defer paymentSpan.End()
+// Child span around the actual payment write
+ctx2, paymentSpan := Tracer.Start(ctx, "ProcessPayment")
+RevenueTotal.Add(price)
+paymentSpan.End()
 \end{lstlisting}
 
 \subsection{Deployment Configuration}
@@ -419,180 +524,199 @@ type Subscription struct {
 
 \subsection{HTTP Handlers}
 
-Subscription handler implements CRUD operations:
+The \texttt{CreateSubscription} handler in \texttt{handlers/subscription\_handlers.go} performs request decoding, validation, plan-existence checking, persistence, and counter incrementing in a single function. Listing~\ref{lst:create-subscription} reproduces the relevant excerpt.
 
-\begin{lstlisting}[language=Go]
-// handlers/subscription_handlers.go
-func (h *SubscriptionHandler) CreateSubscription(w http.ResponseWriter, r *http.Request) {
+\begin{lstlisting}[language=Go, caption={Subscription creation handler (extract)}, label={lst:create-subscription}]
+func CreateSubscription(w http.ResponseWriter, r *http.Request) {
     var req CreateSubscriptionRequest
     if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-        http.Error(w, err.Error(), http.StatusBadRequest)
+        writeError(w, &apierrors.APIError{
+            Code: apierrors.ErrBadRequest, StatusCode: http.StatusBadRequest,
+            Message: "Invalid request body", Details: err.Error(),
+        })
         return
     }
-    
-    // Validate
-    if err := validator.Validate(req); err != nil {
-        apierrors.WriteError(w, apierrors.ErrValidationFailed(err))
+
+    if err := validator.GetValidator().Struct(req); err != nil {
+        writeError(w, apierrors.NewValidationErrors(fieldErrorsFrom(err)))
         return
     }
-    
-    // Create
-    sub, err := h.repo.Create(r.Context(), &Subscription{
-        UserID:  req.UserID,
-        PlanRef: req.PlanRef,
-        State:   "Active",
-    })
-    
-    if err != nil {
-        apierrors.WriteError(w, apierrors.ErrDatabase(err))
+
+    var plan models.BillingPlan
+    if err := db.Conn.WithContext(r.Context()).
+        Where("name = ?", req.PlanRef).First(&plan).Error; err != nil {
+        if errors.Is(err, gorm.ErrRecordNotFound) {
+            writeError(w, apierrors.ErrPlanNotFound)
+            return
+        }
+        writeError(w, apierrors.WrapError(err, "Failed to verify plan"))
         return
     }
-    
-    // Metrics
-    metrics.SubscriptionsCreated.Inc()
-    
+
+    now := time.Now()
+    next := now.AddDate(0, 1, 0)            // hardcoded monthly cycle
+    sub := models.Subscription{
+        UserID: req.UserID, PlanRef: req.PlanRef, State: "Active",
+        LastPayment: &now, NextBilling: &next,
+    }
+    if err := db.Conn.WithContext(r.Context()).Create(&sub).Error; err != nil {
+        writeError(w, apierrors.WrapError(err, "Failed to create subscription"))
+        return
+    }
+
+    subsCreatedTotal.Inc()
     w.WriteHeader(http.StatusCreated)
-    json.NewEncoder(w).Encode(sub)
+    _ = json.NewEncoder(w).Encode(sub)
 }
 \end{lstlisting}
+
+The hardcoded one-month billing cycle (\texttt{AddDate(0, 1, 0)}) on line~14 of the extract is a discrepancy between the two implementations: the kube-billing controller derives the cycle length from \texttt{plan.spec.requeueIntervalSeconds}, while the traditional handler ignores the plan's \texttt{billingPeriod} field entirely. Chapter~\ref{chap:eval} flags this as a fairness caveat when interpreting the comparison.
 
 \subsection{Repository Layer}
 
-Repository pattern abstracts database operations:
+Database access is wrapped by a \texttt{DBTX} interface (Listing~\ref{lst:dbtx}) so that repository methods can be unit-tested against a mock that satisfies the same surface. The real implementations delegate to GORM and are intentionally thin; complex queries (such as the expiration scan in Section~\ref{sec:bg-worker}) are issued directly against the GORM connection rather than promoted to repository methods, on the grounds that a single-use query does not benefit from the abstraction.
 
-\begin{lstlisting}[language=Go]
-// repository/subscription_repository.go
-type SubscriptionRepository interface {
-    Create(ctx context.Context, sub *models.Subscription) (*models.Subscription, error)
-    GetByID(ctx context.Context, id uint) (*models.Subscription, error)
-    List(ctx context.Context) ([]*models.Subscription, error)
-    Cancel(ctx context.Context, id uint) error
-    FindExpired(ctx context.Context, now time.Time) ([]*models.Subscription, error)
-    Update(ctx context.Context, sub *models.Subscription) error
+\begin{lstlisting}[language=Go, caption={Repository abstraction (extract from \texttt{repository/repository.go})}, label={lst:dbtx}]
+type DBTX interface {
+    Create(value interface{}) *gorm.DB
+    First(dest interface{}, conds ...interface{}) *gorm.DB
+    Find(dest interface{}, conds ...interface{}) *gorm.DB
+    Save(value interface{}) *gorm.DB
+    Delete(value interface{}, conds ...interface{}) *gorm.DB
+    Raw(sql string, values ...interface{}) *gorm.DB
+    WithContext(ctx context.Context) *gorm.DB
+    Scan(dest interface{}) *gorm.DB
+    Error() error
 }
 
-type gormSubscriptionRepo struct {
-    db *gorm.DB
-}
+type SubscriptionRepository struct { db DBTX }
 
-func (r *gormSubscriptionRepo) FindExpired(ctx context.Context, now time.Time) ([]*models.Subscription, error) {
-    var subs []*models.Subscription
-    err := r.db.WithContext(ctx).
-        Where("state = ? AND next_billing < ?", "Active", now).
-        Find(&subs).Error
-    return subs, err
+func (r *SubscriptionRepository) Create(ctx context.Context,
+    sub *models.Subscription) error {
+    return r.db.WithContext(ctx).Create(sub).Error
 }
 \end{lstlisting}
 
-\subsection{Background Worker}
+\subsection{Background Worker}\label{sec:bg-worker}
 
-The expiration checker runs every 30 seconds:
+The expiration checker (Listing~\ref{lst:worker-real}) runs once per minute on a single goroutine, scans for active subscriptions whose \texttt{next\_billing} has passed, and marks them as \texttt{Expired}. The interval is set to one minute for ease of demonstration; a production deployment would typically run the check hourly or daily.
 
-\begin{lstlisting}[language=Go]
-// workers/workers.go
-func StartExpirationChecker(ctx context.Context, repo SubscriptionRepository, interval time.Duration) {
-    ticker := time.NewTicker(interval)
-    defer ticker.Stop()
-    
-    for {
-        select {
-        case <-ctx.Done():
-            return
-        case <-ticker.C:
-            expired, err := repo.FindExpired(ctx, time.Now())
-            if err != nil {
-                log.Error("Failed to find expired", "error", err)
-                continue
-            }
-            
-            for _, sub := range expired {
-                sub.State = "Expired"
-                if err := repo.Update(ctx, sub); err != nil {
-                    log.Error("Failed to update", "id", sub.ID, "error", err)
-                }
-            }
-            log.Info("Expiration check completed", "expired", len(expired))
+\begin{lstlisting}[language=Go, caption={Background subscription checker (\texttt{workers/workers.go})}, label={lst:worker-real}]
+func StartSubscriptionChecker() {
+    go func() {
+        ticker := time.NewTicker(1 * time.Minute)
+        defer ticker.Stop()
+        for {
+            <-ticker.C
+            checkExpiredSubscriptions()
+        }
+    }()
+}
+
+func checkExpiredSubscriptions() {
+    now := time.Now()
+    ctx := context.Background()
+
+    var expired []models.Subscription
+    if err := db.Conn.WithContext(ctx).
+        Where("state = ? AND next_billing < ?", "Active", now).
+        Find(&expired).Error; err != nil {
+        log.Printf("[Worker] query failed: %v", err)
+        return
+    }
+
+    for _, sub := range expired {
+        sub.State = "Expired"
+        if err := db.Conn.WithContext(ctx).Save(&sub).Error; err != nil {
+            log.Printf("[Worker] update %d failed: %v", sub.ID, err)
         }
     }
 }
 \end{lstlisting}
 
+Two limitations of this design are worth noting and are returned to in Chapter~\ref{chap:eval}: (i)~the worker has no leader-election and therefore cannot be safely run on more than one replica, which constrains the scaling story; and (ii)~the goroutine has no shutdown channel and ignores any signal handler installed by the main function, so an expiration scan in progress at shutdown is interrupted abruptly.
+
 \subsection{Validation}
 
-Input validation uses go-playground/validator:
+Input validation in the traditional backend uses \texttt{go-playground/validator}. Listing~\ref{lst:validator} reproduces the relevant declarations.
 
-\begin{lstlisting}[language=Go]
+\begin{lstlisting}[language=Go, caption={Validator registration and request schema}, label={lst:validator}]
 // validator/validator.go
 var validate *validator.Validate
 
 func init() {
     validate = validator.New()
-    
-    // Custom validation for currency
-    validate.RegisterValidation("currency", func(fl validator.FieldLevel) bool {
-        currency := fl.Field().String()
-        validCurrencies := map[string]bool{
-            "USD": true, "EUR": true, "RUB": true, 
-            "KZT": true, "GBP": true, "JPY": true, "CNY": true,
-        }
-        return validCurrencies[currency]
-    })
+    _ = validate.RegisterValidation("currency", validateCurrency)
+    _ = validate.RegisterValidation("billing_period", validateBillingPeriod)
+    _ = validate.RegisterValidation("price", validatePrice)
 }
 
+func validateCurrency(fl validator.FieldLevel) bool {
+    return map[string]bool{
+        "USD": true, "EUR": true, "RUB": true, "GBP": true, "KZT": true,
+    }[fl.Field().String()]
+}
+
+// handlers/subscription_handlers.go
 type CreateSubscriptionRequest struct {
-    UserID  string `validate:"required,alphanum,max=255"`
-    PlanRef string `validate:"required,max=255"`
+    UserID  string `json:"userId"  validate:"required,min=1,max=255"`
+    PlanRef string `json:"planRef" validate:"required,min=3,max=50"`
 }
 \end{lstlisting}
+
+Two observations are worth recording because both surface in the comparative discussion:
+
+\begin{itemize}
+\item The custom \texttt{currency}, \texttt{billing\_period}, and \texttt{price} validators are registered but no struct tag uses them; the validators are effectively dead code. The CRD schema, by contrast, enforces currency and billing-period enums at admission time. The mismatch is a concrete example of how the two systems differ in where validation lives: at the API boundary in Kubernetes, in handler-resident code in the traditional design.
+\item The accepted currency sets are not identical (the backend lacks \texttt{JPY} and \texttt{CNY}, which the CRD includes). The asymmetry is a real divergence between the two implementations and is reported as a caveat rather than silently aligned.
+\end{itemize>
 
 \subsection{Observability}
 
 \subsubsection{Metrics}
 
-Prometheus metrics in \texttt{handlers/subscription\_handlers.go}:
+Prometheus counters are declared with the \texttt{promauto} helper so that they register themselves on construction (Listing~\ref{lst:backend-metrics}). The American spelling \texttt{canceled} is used consistently throughout the source --- the British \texttt{cancelled} used in some earlier text has been aligned to match.
 
-\begin{lstlisting}[language=Go]
+\begin{lstlisting}[language=Go, caption={Backend Prometheus counters}, label={lst:backend-metrics}]
 var (
-    subscriptionsCreated = prometheus.NewCounter(prometheus.CounterOpts{
+    subsCreatedTotal = promauto.NewCounter(prometheus.CounterOpts{
         Name: "billing_subscriptions_created_total",
-        Help: "Total number of created subscriptions",
+        Help: "The total number of created subscriptions",
     })
-    
-    subscriptionsCancelled = prometheus.NewCounter(prometheus.CounterOpts{
-        Name: "billing_subscriptions_cancelled_total",
-        Help: "Total number of cancelled subscriptions",
+    subsCanceledTotal = promauto.NewCounter(prometheus.CounterOpts{
+        Name: "billing_subscriptions_canceled_total",
+        Help: "The total number of canceled subscriptions",
     })
 )
 \end{lstlisting}
 
 \subsubsection{Tracing}
 
-OpenTelemetry integration in \texttt{observability/setup.go}:
+OpenTelemetry integration lives in \texttt{observability/setup.go} (Listing~\ref{lst:backend-tracing}). The HTTP layer is instrumented via \texttt{otelmux}, attached to the router in \texttt{main.go} immediately after construction so every subsequent route inherits the tracing middleware.
 
-\begin{lstlisting}[language=Go]
-func SetupTracing(ctx context.Context) (func(), error) {
+\begin{lstlisting}[language=Go, caption={Backend tracer initialisation}, label={lst:backend-tracing}]
+func InitTracer(ctx context.Context, serviceName string)
+    (*trace.TracerProvider, error) {
     exporter, err := otlptracehttp.New(ctx,
-        otlptracehttp.WithEndpoint("jaeger:4318"),
+        otlptracehttp.WithEndpoint("localhost:4318"),
         otlptracehttp.WithInsecure(),
     )
-    
+    if err != nil {
+        return nil, err
+    }
     tp := trace.NewTracerProvider(
         trace.WithBatcher(exporter),
         trace.WithResource(resource.NewWithAttributes(
-            semconv.ServiceNameKey.String("backend-billing"),
+            semconv.ServiceNameKey.String(serviceName),
         )),
     )
-    
     otel.SetTracerProvider(tp)
-    
-    // Apply to HTTP router
-    router.Use(otelmux.Middleware("billing-api"))
-    
-    // Apply to GORM
-    db.Use(tracing.NewPlugin())
-    
-    return func() { tp.Shutdown(ctx) }, nil
+    return tp, nil
 }
+
+// main.go
+r := mux.NewRouter()
+r.Use(otelmux.Middleware("billing-api"))
 \end{lstlisting}
 
 \section{Implementation Comparison}
@@ -603,78 +727,76 @@ Table~\ref{tab:code-metrics} compares code metrics between the two implementatio
 
 \begin{table}[h]
 \centering
-\caption{Code Metrics Comparison}
+\caption{Static code metrics. Source-file counts exclude tests and generated code (\texttt{zz\_generated\_*}). Lines of code are raw line counts from non-test files. The dependency totals are obtained from \texttt{go list -m all}.}
 \label{tab:code-metrics}
 \small\begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
 \textbf{Metric} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Go source files & 24 & 13 \\
-Lines of code (excluding tests) & 3,061 & 2,483 \\
-Test files & 8 & 4 \\
-Max cyclomatic complexity & 12 & 25 \\
-Dependencies (go.mod) & 214 & 191 \\
-Test coverage & 86.2\% & $\sim$70\% \\ \bottomrule
+Non-test Go source files & 15 & 7 \\
+Lines of code (non-test) & 1{,}401 & 1{,}043 \\
+Test files & 9 & 4 \\
+Direct \texttt{go.mod} dependencies & 9 & 9 \\
+Total module graph (incl. transitive) & 213 & 190 \\
+\bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis}:
-\begin{itemize}
-    \item \textbf{backend-billing} has more files but lower complexity --- traditional separation of concerns
-    \item \textbf{kube-billing} is more concentrated --- reconcile loop handles multiple responsibilities
-    \item Higher complexity in kube-billing due to Reconcile pattern and Kubernetes API integration
-\end{itemize}
+\textbf{Discussion.} The traditional backend is roughly one third larger in lines of code and contains twice as many non-test source files, reflecting its layered handler/repository/middleware/worker structure. The kube-billing source is more concentrated because the reconcile loop subsumes the responsibilities of a request handler, a state-transition method, and a background expiration scanner. The transitive dependency totals are within 12\% of each other: although controller-runtime pulls in client-go and a sizeable portion of the Kubernetes API machinery, the traditional backend's GORM + Gorilla mux + OpenTelemetry mux instrumentation expands its own dependency tree to a comparable size.
+
+Coverage is reported in the evaluation chapter (Section~\ref{sec:coverage-results}) rather than here, because measuring it for the kube-billing controller requires running \texttt{envtest} with a downloaded \texttt{etcd} binary; the dedicated subsection records the exact command and per-package numbers so that the reader can re-derive them.
 
 \subsection{State Management}
 
 \textbf{backend-billing}:
 \begin{itemize}
-    \item Explicit CRUD operations through repository pattern
-    \item Transactions via GORM (\texttt{db.Begin()}, \texttt{Commit()}, \texttt{Rollback()})
-    \item Soft delete via \texttt{DeletedAt} timestamp
+    \item Explicit CRUD operations through a thin repository wrapper around GORM, backed by PostgreSQL.
+    \item Soft delete via the GORM \texttt{DeletedAt} timestamp column; rows remain physically present and are excluded by GORM's default query scope.
+    \item No explicit transactions are used; each handler issues at most one write per request.
 \end{itemize}
 
 \textbf{kube-billing}:
 \begin{itemize}
-    \item Declarative state via \texttt{spec} (desired) and \texttt{status} (actual)
-    \item Optimistic locking via \texttt{resourceVersion}
-    \item Finalizers for cleanup guarantees
-    \item Conditions for standardized state reporting
+    \item Declarative state via \texttt{spec} (user-authored desired state) and \texttt{status} (controller-authored observed state); the status subresource is updated through a separate API path that bypasses optimistic locking on the \texttt{spec}.
+    \item Optimistic concurrency via \texttt{resourceVersion}; concurrent writes that race for the same generation fail and are retried by the controller's workqueue.
+    \item Finalizers provide a hook for cleanup work (in this case, the pro-rated refund) that runs even if the controller crashes mid-deletion.
+    \item Conditions provide a standardised, multi-dimensional status representation; the same resource can simultaneously expose \texttt{Active = True} and \texttt{PaymentError = False}, which a single state field cannot.
 \end{itemize}
 
 \subsection{Error Handling}
 
-\textbf{backend-billing}:
-\begin{lstlisting}[language=Go]
-// Explicit error returns
-sub, err := h.repo.Create(ctx, &Subscription{...})
-if err != nil {
-    if errors.Is(err, repository.ErrNotFound) {
-        apierrors.WriteError(w, apierrors.ErrNotFound("plan"))
-    } else {
-        apierrors.WriteError(w, apierrors.ErrDatabase(err))
+The two systems take fundamentally different approaches to error reporting. Listing~\ref{lst:err-backend} shows the traditional backend's explicit error mapping in a handler, and Listing~\ref{lst:err-kube} shows the equivalent operator response of setting a Condition and requeueing.
+
+\begin{lstlisting}[language=Go, caption={Traditional explicit-error mapping}, label={lst:err-backend}]
+if err := db.Conn.WithContext(r.Context()).
+    Where("name = ?", req.PlanRef).First(&plan).Error; err != nil {
+    if errors.Is(err, gorm.ErrRecordNotFound) {
+        writeError(w, apierrors.ErrPlanNotFound)
+        return
     }
+    writeError(w, apierrors.WrapError(err, "Failed to verify plan"))
     return
 }
 \end{lstlisting}
 
-\textbf{kube-billing}:
-\begin{lstlisting}[language=Go]
-// Eventual consistency with requeue
-plan, err := r.getPlan(ctx, sub.Spec.PlanRef)
-if err != nil {
-    // Set error condition
-    sub.Status.Conditions = append(sub.Status.Conditions, 
-        metav1.Condition{
-            Type:   "BillingPlanNotFound",
-            Status: "True",
-            Reason: "PlanNotFound",
-        })
-    r.Status().Update(ctx, sub)
-    
-    // Requeue for retry
-    return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+\begin{lstlisting}[language=Go, caption={Operator-style condition-plus-requeue}, label={lst:err-kube}]
+if err := r.Get(ctx, types.NamespacedName{
+    Name: sub.Spec.PlanRef, Namespace: req.Namespace,
+}, &plan); err != nil {
+    sub.Status.State = SubscriptionStateError
+    PaymentFailures.Inc()
+    meta.SetStatusCondition(&sub.Status.Conditions, metav1.Condition{
+        Type:   billingv1alpha1.SubscriptionBillingPlanNotFound,
+        Status: metav1.ConditionTrue,
+        Reason: "BillingPlanNotFound",
+        Message: fmt.Sprintf("Referenced BillingPlan %q does not exist",
+            sub.Spec.PlanRef),
+    })
+    _ = r.Status().Update(ctx, &sub)
+    return ctrl.Result{RequeueAfter: time.Minute}, nil
 }
 \end{lstlisting}
+
+The two extracts are isomorphic in intent but differ in audience: the backend's response goes to a human or downstream service that holds an HTTP connection open, whereas the operator's response goes to the resource itself in the form of a typed Condition that any other tool (\texttt{kubectl}, an event-driven dashboard, an upstream Operator) can observe asynchronously.
 
 \subsection{Testing Approach}
 
