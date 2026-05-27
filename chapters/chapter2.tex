@@ -52,27 +52,59 @@ Operators capture the aim of human operators who manage services—they have dee
 
 \subsection{Operator Development Frameworks}
 
-Kubebuilder is the most prominent framework for facilitating Operator development~\cite{kubebuilder}. Built on top of controller-runtime and controller-tools libraries, it provides scaffolding for creating CRDs and controllers using Go~\cite{hausenblas2019}. The framework automates much of the boilerplate code generation, allowing developers to focus on implementing business logic in the reconciliation loop.
+Although the Operator pattern is framework-agnostic in principle, in practice every non-trivial controller is built on a higher-level scaffold that hides the watch-list-cache-reconcile boilerplate. Four frameworks dominate the space and differ along several axes that influence the choice for business-logic controllers.
 
-Research on Operator development best practices emphasizes the importance of proper RBAC configuration, efficient handling of custom resources, and robust error handling~\cite{openshift_operators_lifecycle}. Studies analyzing Operator bugs across Kubernetes operators have identified common failure patterns related to state management, error handling, and race conditions~\cite{operator_bugs}.
+Kubebuilder~\cite{kubebuilder} is the SIG-API-Machinery-maintained framework that this thesis uses. It generates a project skeleton with a single language (Go), wires up \texttt{controller-runtime} and \texttt{controller-tools}, and produces both Go types and OpenAPI CRD manifests from kubebuilder markers attached to struct fields. Its dominance in the operator ecosystem follows from its proximity to the upstream Kubernetes project: the same primitives underlying \texttt{kube-controller-manager} are reused, and updates track Kubernetes releases closely~\cite{hausenblas2019}.
+
+The Red Hat Operator SDK extends Kubebuilder with additional code generators (Ansible-driven and Helm-driven operator scaffolds) and tighter integration with the Operator Lifecycle Manager~\cite{openshift_operators_lifecycle}. For Go-based operators the two frameworks are largely interchangeable; the Operator SDK is preferable when the operator is intended to ship through OperatorHub, where OLM-aware manifests are mandatory.
+
+Metacontroller (originally Google, now community-maintained) inverts the control structure: the developer writes a webhook returning desired child objects given the parent's state, and Metacontroller is the controller that calls the webhook. This is attractive for declarative compositions where the operator's job is to render N child resources from M parents, but the lack of language constraints comes at the cost of an indirection that complicates debugging.
+
+KUDO and KubeOps target operator authors outside the Go ecosystem (a YAML DSL and .NET respectively) and are accordingly less common for general-purpose business logic. They illustrate that the operator pattern is portable across language ecosystems even though the reference implementation is Go.
+
+For the business-logic use case explored in this thesis, Kubebuilder is the only framework that combines (i)~native Go performance, (ii)~direct access to the controller-runtime metrics registry needed for instrumentation, and (iii)~a mature testing harness (\texttt{envtest}); the comparison in subsequent chapters is therefore conducted against Kubebuilder-shaped operators. Studies analysing operator bugs across hundreds of Kubernetes operators identify state management, error handling, and race conditions as the dominant failure modes~\cite{operator_bugs}, regardless of framework choice --- a finding that motivates the explicit attention this thesis pays to the Conditions API and finalizer ordering in Chapters~\ref{chap:met} and~\ref{chap:impl}.
 
 \subsection{Operator Use Cases and Applications}
 
 Operators have been successfully applied to numerous domains including database management, monitoring systems, service meshes, and machine learning platforms~\cite{dobies2020, openshift_operators_lifecycle}. For infrastructure provisioning, Crossplane exemplifies using Operators to manage cloud resources declaratively through Kubernetes~\cite{crossplane}. This approach enables treating infrastructure as Kubernetes resources, managed through the same workflows as application deployments.
 
-\section{Related Systems and Approaches}
+\section{Related Systems and Their Boundaries}
 
-\subsection{Infrastructure as Code and GitOps}
+The CRD-and-controller pattern is used in three distinct settings: infrastructure provisioning, network and policy management, and (the focus of this thesis) business workflow management. The first two are mature and well-studied; the third is the gap this thesis addresses. Setting the scope explicitly clarifies what is and is not new about the proposed work.
 
-Infrastructure as Code (IaC) provides declarative approaches to infrastructure provisioning~\cite{iac_devops}. While similar in declaring desired state, traditional IaC tools typically use imperative execution models and lack the continuous reconciliation capabilities inherent to Kubernetes controllers~\cite{kubernetes_declarative_automation}.
+\subsection{Infrastructure as Code, GitOps, and Crossplane}
 
-The GitOps methodology extends IaC principles by using Git as the single source of truth and implementing continuous delivery through pull-based reconciliation~\cite{gitops, argocd}. GitOps shares philosophical alignment with Kubernetes' declarative model, making it a natural fit for managing Kubernetes resources including CRDs.
+Infrastructure as Code (IaC) and Kubernetes operators share the language of declarative desired state but disagree on the execution model. Tools like Terraform and Pulumi compile a desired configuration into a one-shot apply step: the agent runs once, converges, and exits. The control loop is external, lives in the developer's CI pipeline, and only fires on explicit invocation~\cite{iac_devops, kubernetes_declarative_automation}. A Kubernetes operator, by contrast, runs continuously and reconciles every change event; there is no apply boundary, and drift between declared and actual state is detected within seconds of its appearance.
 
-\subsection{Service Mesh Architectures}
+GitOps shifts that boundary back inside the cluster: an in-cluster agent (Argo~CD, Flux) holds a working copy of a Git repository and continuously reconciles the cluster toward whatever the current commit declares~\cite{gitops, argocd}. The agent itself is a controller; what was an external IaC tool becomes another reconciliation loop inside the same cluster. GitOps and the operator pattern therefore sit on a spectrum, with the agent treating Kubernetes resources as the desired state and the operator treating CRDs as the desired state.
 
-Service mesh technologies like Istio demonstrate advanced usage of Kubernetes extensibility for managing service-to-service communication~\cite{istio}. These systems use CRDs extensively to define traffic management, security policies, and observability configurations, providing examples of complex operational logic implemented through Kubernetes extension mechanisms~\cite{nist_service_mesh_security}.
+Crossplane is the clearest example of operators in the IaC role: it exposes cloud-provider primitives (S3 buckets, RDS instances, IAM roles) as CRDs, and a controller per provider drives the actual cloud resources toward the declared state~\cite{crossplane}. The operator pattern thus has an established use in infrastructure provisioning. What distinguishes the present thesis is the \emph{scope of the reconciled object}: Crossplane reconciles cloud infrastructure; this work reconciles a business entity whose lifecycle (subscriptions, billing cycles, refunds) has no infrastructure component at all.
 
-Research comparing service mesh architectures reveals trade-offs between feature richness and operational complexity, with implications for designing custom business logic controllers. The patterns used in service meshes offer lessons for separating concerns in business logic implementations.
+\subsection{Service Meshes as Heavy CRD Consumers}
+
+Service meshes such as Istio illustrate that CRDs scale to operationally complex domains: a single Istio installation registers dozens of CRDs (\texttt{VirtualService}, \texttt{DestinationRule}, \texttt{AuthorizationPolicy}, \texttt{PeerAuthentication}, and others)~\cite{istio, nist_service_mesh_security}. Each is a piece of policy that the mesh control plane reconciles into proxy configuration. Operationally this is impressive --- but the scope is still ``cluster-wide infrastructure policy''. The service mesh case is instructive in two ways: it demonstrates that the CRD pattern can sustain complex hierarchies of declarative configuration, and it sets a precedent for treating the policy layer as a first-class API surface. Both observations transfer to the business-logic case, but service meshes do not themselves constitute business-logic operators.
+
+\subsection{Where This Work Sits}
+
+Table~\ref{tab:operator-scopes} positions the proposed work against the existing categories of operator deployments.
+
+\begin{table}[h]
+\centering
+\small
+\caption{The scope of object reconciled distinguishes operator categories.}
+\label{tab:operator-scopes}
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Operator category} & \textbf{Reconciled object} & \textbf{Examples} \\ \midrule
+Infrastructure & Cloud or on-prem infrastructure primitives (compute, storage, networking) & Crossplane, AWS Controllers for Kubernetes \\
+Application lifecycle & Stateful applications managed by Kubernetes (databases, queues, ML platforms) & Postgres Operator, etcd Operator, Kubeflow \\
+Policy / network & Cluster-wide policy artefacts (traffic rules, RBAC, security policies) & Istio, Cilium, Open Policy Agent \\
+Business workflow \emph{(this work)} & Domain entities whose lifecycle is the business logic itself (subscriptions, orders, tenants) & kube-billing reference implementation \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The category boundary is not merely cosmetic. Application-lifecycle operators reconcile Kubernetes resources (Pods, Services, PersistentVolumeClaims) on behalf of a stateful workload they package, and their cleanup hooks usually orchestrate pod-level operations. Business-workflow operators reconcile resources whose canonical representation \emph{is} the CRD: there is no underlying Pod or external system being managed; the resource is the work. This shift in reference frame is what the present thesis investigates empirically and what motivates the comparison against a traditional REST stack rather than against another operator.
 
 \section{Observability in Cloud-Native Systems}
 
@@ -102,19 +134,16 @@ For business logic implementations specifically, additional complexity arises fr
 
 \section{Research Gaps}
 
-Despite extensive research on Kubernetes architecture, CRDs, and Operators, several gaps exist in current literature:
+The literature surveyed above documents the operator pattern thoroughly in three categories --- infrastructure provisioning (Crossplane and provider-specific operators), application lifecycle (database and ML-platform operators), and policy/network (service meshes). The business-workflow category is essentially absent from the academic literature, and the few practitioner reports that do describe such operators do not measure them. The specific gaps this thesis addresses are:
 
 \begin{enumerate}
-    \item Limited systematic study of using Kubernetes for general-purpose business logic implementation, with most examples focused on infrastructure or specialized domains~\cite{kubernetes_multivocal_review}.
-    
-    \item Insufficient quantitative performance comparisons between CRD/Operator-based approaches and traditional architectures for equivalent business logic.
-    
-    \item Lack of comprehensive guidelines on when the CRD/Operator pattern is appropriate for business applications versus when traditional architectures should be preferred.
-    
-    \item Limited research on implementation complexity and developer experience when using Kubernetes as a business logic platform~\cite{kubernetes_multivocal_review}.
+    \item \textbf{Absence of empirical comparison against a non-operator baseline for equivalent business logic.} The multi-vocal review~\cite{kubernetes_multivocal_review} catalogues benefits and challenges of Kubernetes adoption but reports no controlled comparison between a CRD-based and a non-CRD-based implementation of the same business workflow; the existing performance literature focuses on etcd as a substrate~\cite{etcd_impact} rather than on the application-level cost of running business logic above it.
+    \item \textbf{Lack of treatment of business-workflow operators as a distinct category.} Existing operator studies (Operator SDK literature~\cite{openshift_operators_lifecycle}, the Operator-bugs empirical study~\cite{operator_bugs}) examine operators built for infrastructure or application-lifecycle purposes; the question of whether the operator pattern is suitable for reconciling \emph{business} entities is not separated from the question of whether it is suitable for reconciling \emph{infrastructure} entities, even though the two have substantially different latency and throughput requirements.
+    \item \textbf{No principled discussion of construct asymmetries between operator and REST architectures.} Comparisons that do exist (in technical blogs and conference talks) tend to align the two architectures at the feature level and underspecify the cases where they cannot be aligned --- cancellation, error reporting, audit trails. The asymmetry itself is treated as an implementation detail rather than as a finding.
+    \item \textbf{Limited evidence-based guidance on when the operator pattern is justified for business logic.} The decision-framework material in practitioner literature is largely intuition-driven; the multi-vocal review notes the gap but does not fill it.
 \end{enumerate}
 
-This thesis aims to address these gaps through systematic design, implementation, and evaluation of Kubernetes-based business logic using CRDs and Operators.
+These gaps motivate the structure of the rest of the thesis: a controlled comparison between two reference implementations of the same business workflow (Chapter~\ref{chap:impl}), measured along latency, throughput, resource utilisation, and operational dimensions (Chapter~\ref{chap:eval}), with construct asymmetries reported as findings rather than smoothed over (Chapter~\ref{chap:conclusion}).
 
 \section{Summary}
 

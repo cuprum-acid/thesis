@@ -153,6 +153,8 @@ E2E tests & 8 & 4 \\ \bottomrule
 
 \section{Performance Evaluation}
 
+Latency is reported as p50/p95/p99 in keeping with established cloud-benchmarking practice~\cite{tene_latency, hdrhistogram, gregg2020systems}; coordinated omission~\cite{tene_latency} is avoided in the reconcile-driven kube-billing measurements by recording each subscription's individual time-to-Active rather than aggregating into fixed reporting windows.
+
 \subsection{Microbenchmarks}
 
 Go microbenchmarks measure isolated function performance without I/O overhead.
@@ -195,12 +197,12 @@ End subscription & 8 & 20 & 40 & 80 & 180 & 350 \\ \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis}: The traditional backend is 10--20$\times$ faster for all operations. The Kubernetes API server introduces overhead from:
+\textbf{Analysis}: The traditional backend is roughly an order of magnitude faster at p50 across operations. The Kubernetes API server introduces overhead from:
 \begin{itemize}
-    \item Admission control (validation webhooks)
-    \item etcd write latency (distributed consensus)
-    \item Resource versioning and conflict detection
-    \item Watch event propagation
+    \item Admission control (CRD schema validation runs synchronously on every write~\cite{crd_features})
+    \item etcd write latency from the consensus path~\cite{etcd_impact}
+    \item Resource versioning and optimistic-concurrency conflict detection
+    \item Watch event propagation through the apiserver's flow-control machinery~\cite{k8s_apf}
 \end{itemize}
 
 \subsection{Throughput Under Load}
@@ -220,7 +222,7 @@ Error rate at peak load & 0.1\% & 2.5\% \\ \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis}: The traditional backend achieves 5$\times$ higher throughput. Kubernetes API server becomes a bottleneck under high write load due to etcd contention and rate limiting (default: 1000 writes/second cluster-wide).
+\textbf{Analysis}: The traditional backend achieves substantially higher throughput at this concurrency level. The Kubernetes API server becomes a bottleneck under sustained write load not because of a single hard rate limit but because of the combined effect of API Priority and Fairness flow-control queues~\cite{k8s_apf}, etcd transaction commit latency~\cite{etcd_impact}, and watch fan-out work. The number reported here is the throughput observed on a single-node Minikube cluster and should not be read as a cluster-wide ceiling for production Kubernetes deployments; the construct mismatch between HTTP throughput and reconcile-driven throughput is discussed in Section~\ref{sec:limitations}.
 
 \section{Resource Utilization}
 
@@ -239,11 +241,11 @@ Peak (100\% capacity) & 500m & 800m \\ \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis}: The Kubernetes controller consumes 5$\times$ more CPU at idle due to:
+\textbf{Analysis}: The Kubernetes controller consumes substantially more CPU at idle due to several baseline costs:
 \begin{itemize}
-    \item Continuous watch connections to API server
-    \item Reconcile loop polling (even with no work)
-    \item Prometheus metric collection overhead
+    \item Continuous watch connections to the API server with periodic re-list, even when no resources change~\cite{client_go}
+    \item Informer caches maintained in memory for every watched resource~\cite{controller_runtime, ibryam2020}
+    \item Standard controller-runtime metrics (workqueue depth, reconcile counters) and Prometheus client overhead
 \end{itemize}
 
 \subsection{Memory Usage}

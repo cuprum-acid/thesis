@@ -4,7 +4,7 @@ This chapter describes the research methodology, system design, and architectura
 
 \section{Research Approach}
 
-This research followed a system design and comparative analysis approach. Two functionally equivalent systems were designed and implemented:
+This research followed a system design and comparative analysis approach, in keeping with the methodology used in prior empirical studies of cloud-native systems~\cite{bermbach2017benchmarking, kubernetes_multivocal_review}. Two functionally comparable systems were designed and implemented:
 
 \begin{itemize}
     \item A Kubernetes-native system based on Custom Resource Definitions (CRDs) and the Operator pattern.
@@ -61,7 +61,7 @@ Referenced plan missing & request rejected at admission (404) & \texttt{Error} w
 \end{tabularx}
 \end{table}
 
-The asymmetry reflects an architectural truth: in a REST-and-database design, cancellation and expiration are in-band state transitions that must be modelled explicitly; in a controller-based design, cancellation can ride on Kubernetes' built-in resource lifecycle via finalizers, while transient failures are surfaced through Conditions and re-attempted by the reconcile loop rather than being persisted as terminal states. Chapter~\ref{chap:eval} discusses how this distinction affects the comparative evaluation.
+The asymmetry reflects an architectural truth that the Kubernetes API conventions document explicitly~\cite{k8s_api_conventions, ibryam2020}: in a REST-and-database design, cancellation and expiration are in-band state transitions that must be modelled explicitly; in a controller-based design, cancellation can ride on Kubernetes' built-in resource lifecycle via finalizers, while transient failures are surfaced through Conditions and re-attempted by the reconcile loop rather than being persisted as terminal states. Chapter~\ref{chap:eval} discusses how this distinction affects the comparative evaluation.
 
 \section{Traditional System Architecture}
 
@@ -206,7 +206,7 @@ The \texttt{Subscription} CRD enforces strict validation:
 
 \subsection{Operator Controller Implementation}
 
-The core business logic resides in the \texttt{SubscriptionReconciler}, implemented using controller-runtime. The reconciler continuously processes Subscription resources and ensures correct system state.
+The core business logic resides in the \texttt{SubscriptionReconciler}, implemented using \texttt{controller-runtime}~\cite{controller_runtime, kubebuilder}. The reconciler continuously processes Subscription resources and ensures correct system state.
 
 \subsubsection{Reconciliation Workflow}
 
@@ -268,7 +268,7 @@ This mechanism guarantees cleanup logic execution even if the controller crashes
 
 \subsection{Execution Model}
 
-Unlike the traditional system, execution is event-driven and declarative:
+Unlike the traditional system, execution is event-driven and declarative~\cite{ibryam2020, kubernetes_declarative_automation}:
 
 \begin{itemize}
     \item \textbf{Declarative}: User declares desired state in YAML (\texttt{spec}), controller drives actual state (\texttt{status})
@@ -289,7 +289,7 @@ System state is stored in the Kubernetes control plane (\texttt{etcd}) as custom
     \item \textbf{Status subresource}: Separate update path for controller-managed state (optimizes write conflicts)
 \end{itemize}
 
-The declarative state model enables automatic recovery: if the controller crashes, it reconstructs state from etcd on restart and resumes reconciliation.
+The declarative state model enables automatic recovery: if the controller crashes, it reconstructs state from etcd on restart and resumes reconciliation, an approach whose theoretical underpinnings are discussed in Helland's argument for state-as-data over hidden transactional state~\cite{helland2007life}.
 
 \subsection{Observability Integration}
 

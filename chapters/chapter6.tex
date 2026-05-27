@@ -17,21 +17,21 @@ Both systems implement identical business logic (billing plan management, subscr
 
 \subsection{RQ1: How can business logic be effectively modeled and implemented using Kubernetes CRDs and the Operator pattern?}
 
-\textbf{Answer}: Business logic can be modeled using Kubernetes CRDs by:
+\textbf{Answer.} Business logic that has a natural lifecycle representation can be modelled using the following five-element programming surface, all of which appear in the reference implementation~\cite{ibryam2020, dobies2020, hausenblas2019}:
 
 \begin{enumerate}
-    \item \textbf{Defining domain entities as CRDs}: BillingPlan and Subscription resources extend the Kubernetes API with domain-specific semantics
-    \item \textbf{Using spec/status separation}: Desired state (spec) is declared by users; actual state (status) is managed by the controller
-    \item \textbf{Implementing reconcile loop}: The Operator continuously compares spec vs status and applies changes to converge toward desired state
-    \item \textbf{Leveraging Kubernetes primitives}: Finalizers for cleanup, Conditions for state reporting, Events for audit trail
-    \item \textbf{Using admission control}: CRD validation markers enforce business rules at API boundary
-\end{enumerate}
+    \item \textbf{Defining domain entities as CRDs}: BillingPlan and Subscription resources extend the Kubernetes API with domain-specific semantics, following the Kubernetes API conventions~\cite{k8s_api_conventions, crd_kubernetes}.
+    \item \textbf{Using spec/status separation}: desired state (spec) is declared by users; actual state (status) is managed by the controller through a separate subresource that bypasses optimistic locking on the spec.
+    \item \textbf{Implementing a reconcile loop}: the operator continuously compares spec vs status and applies changes to converge toward desired state, via the controller-runtime library~\cite{controller_runtime, kubebuilder}.
+    \item \textbf{Leveraging Kubernetes primitives}: finalizers for cleanup that survives controller restart, \texttt{metav1.Condition} arrays for multi-dimensional state reporting~\cite{k8s_api_conventions}, and the Kubernetes Events API for a structured audit trail.
+    \item \textbf{Using admission control}: CRD validation markers enforce business rules at the API boundary~\cite{crd_features}, replacing the runtime-validation step that a REST handler would have to write by hand.
+\end{enumerate>
 
 The key insight is that business logic becomes a \textit{control problem} rather than a \textit{computation problem}: the Operator acts as an automated control system that maintains system state according to business rules.
 
 \subsection{RQ2: What are the performance characteristics of CRD/Operator-based implementation compared to traditional REST API architectures?}
 
-\textbf{Answer}: The experimental evaluation (Chapter~\ref{chap:eval}) demonstrates significant performance differences:
+\textbf{Answer.} The controlled experiment in Chapter~\ref{chap:eval}, measured with the methodology described in Section~\ref{sec:reproducibility} and using percentile-based latency reporting in keeping with established benchmarking practice~\cite{tene_latency, hdrhistogram}, demonstrates a consistent performance gap:
 
 \begin{table}[h]
 \centering
@@ -47,13 +47,13 @@ Startup time & 2s & 10s \\ \bottomrule
 \end{tabularx}
 \end{table}
 
-The traditional backend is \textbf{10--20$\times$ faster} in latency and \textbf{5$\times$ higher} in throughput. The Kubernetes API server and etcd introduce overhead from admission control, distributed consensus, and watch event propagation.
+The traditional backend is roughly an order of magnitude faster at p50 latency and substantially higher in throughput at the concurrency levels tested. The Kubernetes API server and etcd introduce overhead from admission control~\cite{crd_features}, distributed consensus~\cite{etcd_impact}, and watch event propagation through the apiserver's flow-control machinery~\cite{k8s_apf}.
 
 \textbf{Conclusion}: For performance-critical applications, the traditional approach is superior. The Operator pattern trades raw performance for operational benefits.
 
 \subsection{RQ3: What are the operational implications and observability capabilities of using Kubernetes as a business logic platform?}
 
-\textbf{Answer}: The Kubernetes approach provides significant operational advantages:
+\textbf{Answer.} The Kubernetes approach inherits a set of operational properties from the platform itself, several of which would have to be implemented by hand in a traditional REST stack~\cite{ibryam2020, dobies2020}:
 
 \begin{itemize}
     \item \textbf{Automatic scaling}: HorizontalPodAutoscaler adjusts replicas based on CPU/memory utilization
@@ -65,7 +65,7 @@ The traditional backend is \textbf{10--20$\times$ faster} in latency and \textbf
         \item Conditions (metav1.Condition) standardize state reporting
         \item Reconciliation metrics expose control loop behavior
     \end{itemize}
-    \item \textbf{GitOps compatibility}: CRD manifests integrate with ArgoCD/Flux workflows
+    \item \textbf{GitOps compatibility}: CRD manifests integrate with Argo~CD or Flux workflows~\cite{argocd, gitops_principles}, treating business resources as first-class objects subject to the same review and rollback discipline as deployments
 \end{itemize}
 
 However, these benefits come with operational complexity:
