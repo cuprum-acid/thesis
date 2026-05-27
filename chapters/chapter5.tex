@@ -84,72 +84,59 @@ Table~\ref{tab:loc-comparison} shows the code size metrics for both implementati
 
 \begin{table}[h]
 \centering
-\caption{Code Size Metrics}
+\caption{Code size, measured at the commit SHAs listed in Section~\ref{sec:reproducibility}. Source-file counts exclude tests and generated code (\texttt{zz\_generated\_*}).}
 \label{tab:loc-comparison}
 \small\begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
 \textbf{Metric} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Go source files & 24 & 13 \\
-Lines of code (total) & 3,061 & 2,483 \\
-Test files & 8 & 4 \\
-Average LOC per file & 127 & 191 \\ \bottomrule
+Non-test Go source files & 15 & 7 \\
+Lines of code (non-test) & 1{,}401 & 1{,}043 \\
+Test files & 9 & 4 \\
+Average LOC per non-test file & 93 & 149 \\ \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis}: The Kubernetes implementation is 19\% smaller in total LOC but has 50\% higher density (LOC/file). This reflects the concentrated nature of reconcile logic versus the layered architecture of the traditional backend.
-
-\subsection{Cyclomatic Complexity}
-
-Cyclomatic complexity measures the number of linearly independent paths through code.
-
-\begin{table}[h]
-\centering
-\caption{Cyclomatic Complexity}
-\label{tab:complexity-comparison}
-\small\begin{tabularx}{\textwidth}{@{}lXX@{}}
-\toprule
-\textbf{Metric} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Maximum complexity & 12 & 25 \\
-Average complexity & 4.2 & 8.7 \\
-Functions with complexity > 10 & 2 & 5 \\ \bottomrule
-\end{tabularx}
-\end{table}
-
-\textbf{Analysis}: The Kubernetes controller has 108\% higher maximum complexity due to the reconcile loop handling multiple state transitions, error conditions, and requeue logic. This complexity is inherent to the Operator pattern.
+\textbf{Analysis.} The Kubernetes implementation is roughly one quarter smaller in total LOC but has 60\% higher density (LOC per non-test file). This reflects the concentrated nature of reconcile logic --- one reconciler subsumes what the traditional backend splits into handlers, repositories, middleware, and a worker.
 
 \subsection{Dependencies}
 
 \begin{table}[h]
 \centering
-\caption{Go Module Dependencies}
+\caption{Go module dependencies, obtained from \texttt{go list -m all}.}
 \label{tab:deps-comparison}
 \small\begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
 \textbf{Metric} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Direct dependencies & 45 & 38 \\
-Transitive dependencies & 214 & 191 \\
-Total module size & 42 MB & 38 MB \\ \bottomrule
+Direct dependencies         & 9   & 9   \\
+Transitive dependencies     & 213 & 190 \\ \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis}: Both systems have comparable dependency footprints. The Kubernetes system benefits from controller-runtime bundling many utilities, while the traditional system requires more explicit dependencies (GORM, Gorilla Mux, validator).
+\textbf{Analysis.} The two systems have nearly identical direct-dependency counts and transitive footprints that differ by under 12\%. The popular intuition that ``controller-runtime is heavy'' is borne out only against the empty-baseline case: against a non-trivial REST stack (Gorilla mux + GORM + Prometheus client + OpenTelemetry mux + validator + viper) the dependency-graph weights are comparable.
 
-\subsection{Test Coverage}
+\subsection{Test Coverage}\label{sec:coverage-results}
+
+Test coverage was measured with \texttt{go test -cover ./...} on each repository at the commit SHAs documented in Section~\ref{sec:reproducibility}. Coverage is reported per-package rather than as a single project-wide statistic, because a project-wide average weighted by statement count is misleading when integration-tested packages dominate the line count.
 
 \begin{table}[h]
 \centering
-\caption{Test Coverage}
-\label{tab:coverage-comparison}
-\small\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\caption{Per-package statement coverage for backend-billing, measured with \texttt{go test -cover ./...}. Packages without any test files are listed as \emph{no tests}.}
+\label{tab:coverage-backend}
+\small\begin{tabularx}{\textwidth}{@{}lX@{}}
 \toprule
-\textbf{Metric} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Statement coverage & 86.2\% & $\sim$70\% \\
-Integration tests & 12 & 6 \\
-E2E tests & 8 & 4 \\ \bottomrule
+\textbf{Package} & \textbf{Statement coverage} \\ \midrule
+\texttt{apierrors}                   & 100.0\% \\
+\texttt{middleware}                  & 97.1\% \\
+\texttt{validator}                   & 53.3\% \\
+\texttt{handlers}                    & 13.9\% \\
+\texttt{main}, \texttt{config}, \texttt{db}, \texttt{observability}, \texttt{repository}, \texttt{workers} & no test files \\
+\bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis}: The traditional backend has higher test coverage due to simpler mocking (interface-based repositories) versus Kubernetes client mocking. E2E tests for kube-billing require Kind cluster setup, increasing test complexity.
+\textbf{Analysis.} The headline ``86.2\%'' figure quoted in earlier drafts is not defensible: it was the unweighted average across the four covered packages and ignored the six packages with no test files at all. The true picture is sharply bimodal: error mapping and middleware are well covered (100\%, 97.1\%), validation is partially covered (53.3\%), and HTTP handlers --- the package that should be most thoroughly tested --- has only 13.9\% statement coverage because most behaviour is exercised through integration tests rather than handler-package unit tests. Recording this accurately rather than presenting an inflated single number is one of the methodological corrections this thesis adopts.
+
+The kube-billing controller's coverage requires a separate methodology because the Ginkgo \texttt{BeforeSuite} hook expects an \texttt{envtest} binary (\texttt{/usr/local/kubebuilder/bin/etcd}) provisioned by \texttt{setup-envtest}; without that binary the suite cannot start and \texttt{go test -cover} reports 1.9\% coverage that does not reflect the actual test surface. Repeating the measurement with \texttt{setup-envtest use} would yield a meaningful per-package figure; this is recorded as a methodological caveat rather than a substantive claim.
 
 \section{Performance Evaluation}
 
@@ -162,38 +149,64 @@ Go microbenchmarks measure isolated function performance without I/O overhead.
 \begin{table}[h]
 \centering
 \small
-\caption{Microbenchmark Results (Apple M4)}
+\caption{Microbenchmark results for the traditional backend. Measured with \texttt{go test -bench=. -benchmem -benchtime=2s -count=3} on the M3 host described in Section~\ref{sec:reproducibility}. Values are means across the three runs; per-run variation was below 1\%.}
 \label{tab:microbenchmarks}
 \begin{tabularx}{\textwidth}{@{}lXXX@{}}
 \toprule
 \textbf{Benchmark} & \textbf{Time/op} & \textbf{Memory/op} & \textbf{Allocs/op} \\ \midrule
-CreatePlan (validation) & 855 ns & 5,171 B & 11 \\
-ValidatePlan & 359 ns & 368 B & 10 \\
-WriteError & 649 ns & 1,016 B & 10 \\
-HealthCheck & 1,383 ns & 6,184 B & 20 \\ \bottomrule
+CreatePlan (request marshal) & 837\,ns   & 5{,}170\,B & 11 \\
+ValidatePlan (JSON encode loop) & 391\,ns   & 368\,B     & 10 \\
+WriteError (error response) & 458\,ns   & 1{,}016\,B & 10 \\
+HealthCheck (full handler) & 1{,}306\,ns & 6{,}183\,B & 20 \\ \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis}: Pure Go operations complete in sub-microsecond timeframes with minimal allocations. These benchmarks represent best-case latency for the traditional backend without database or network overhead.
+\textbf{Analysis.} Pure Go handler operations complete in the hundreds of nanoseconds with double-digit allocations. These benchmarks represent best-case latency for the traditional backend without database, JSON-over-HTTP, or network overhead --- and serve as the lower bound against which end-to-end numbers should be compared. Equivalent kube-billing microbenchmarks (for example, \texttt{BenchmarkReconcile} with a fake client) are not reported because the controller's hot path is dominated by API-server round-trips that no in-process benchmark can capture; the meaningful kube-billing measurement is the end-to-end latency reported in Section~\ref{tab:e2e-latency}. Listing~\ref{lst:bench-out} reproduces the raw \texttt{go test -bench} output that underlies Table~\ref{tab:microbenchmarks}.
+
+\begin{lstlisting}[language=bash, caption={Raw \texttt{go test -bench} output (Apple M3, three runs each)}, label={lst:bench-out}]
+$ go test -bench=. -benchmem -benchtime=2s -count=3 \
+    -run=^$ ./handlers/
+
+goos: darwin
+goarch: arm64
+pkg: backend-billing/handlers
+cpu: Apple M3
+BenchmarkCreatePlan_ValidRequest-8  2916380   836.1 ns/op  5170 B/op  11 allocs/op
+BenchmarkCreatePlan_ValidRequest-8  2846632   839.5 ns/op  5170 B/op  11 allocs/op
+BenchmarkCreatePlan_ValidRequest-8  2844063   834.9 ns/op  5170 B/op  11 allocs/op
+BenchmarkValidatePlan-8             6176682   390.2 ns/op   368 B/op  10 allocs/op
+BenchmarkValidatePlan-8             6133996   391.1 ns/op   368 B/op  10 allocs/op
+BenchmarkValidatePlan-8             6126456   391.4 ns/op   368 B/op  10 allocs/op
+BenchmarkWriteError-8               5222164   458.7 ns/op  1016 B/op  10 allocs/op
+BenchmarkWriteError-8               5229012   457.8 ns/op  1016 B/op  10 allocs/op
+BenchmarkWriteError-8               5252906   458.0 ns/op  1016 B/op  10 allocs/op
+BenchmarkHealthCheck-8              1840801  1306   ns/op  6183 B/op  20 allocs/op
+BenchmarkHealthCheck-8              1831030  1308   ns/op  6183 B/op  20 allocs/op
+BenchmarkHealthCheck-8              1842711  1303   ns/op  6183 B/op  20 allocs/op
+PASS
+ok      backend-billing/handlers    37.902s
+\end{lstlisting}
 
 \subsection{End-to-End Latency}
 
-Table~\ref{tab:e2e-latency} shows realistic latency including I/O.
+Table~\ref{tab:e2e-latency} summarises the end-to-end latency observed on the reference hardware. The values are reported as approximate order-of-magnitude figures rather than precise mean-with-confidence-interval estimates because the measurement protocol described in Section~\ref{sec:reproducibility} (concurrent client harness for kube-billing, hardware-isolated runs, raw-data archival) was applied uniformly in only one of the two systems during the timeframe of this thesis; the kube-billing numbers were obtained during exploratory runs and are reported at the granularity supported by that data. A re-execution of the harness on both systems is the first item of methodological future work (Section~\ref{sec:future-work}).
+
+backend-billing values are HTTP request latency measured with \texttt{hey} at concurrency 50; kube-billing values are measured from \texttt{kubectl apply} to the first \texttt{status.state} update, except for the termination row, which is measured from \texttt{kubectl delete} to resource removal after finalizer cleanup. The state-vocabulary asymmetry described in Table~\ref{tab:state-comparison} carries through here: the ``End subscription'' row compares an in-band cancel (backend) against an out-of-band delete-with-finalizer (operator), which is the closest equivalence available rather than a strict apples-to-apples comparison.
 
 \begin{table}[h]
 \centering
 \small
-\caption{End-to-end client-observed latency in milliseconds. backend-billing values are HTTP request latency; kube-billing values are measured from \texttt{kubectl apply} to the first \texttt{status.state} update, except for the termination row, which is measured from \texttt{kubectl delete} to resource removal after finalizer cleanup. Operations marked \textit{N/A} have no analogue in the other system; the asymmetry is itself a finding (see Section~\ref{tab:state-comparison}).}
+\caption{End-to-end client-observed latency, milliseconds. Values are approximate p50/p95/p99 from exploratory runs; see methodology note above.}
 \label{tab:e2e-latency}
 \begin{tabularx}{\textwidth}{@{}l c c c c c c@{}}
 \toprule
 \textbf{Operation} & \multicolumn{3}{c}{\textbf{backend-billing (ms)}} & \multicolumn{3}{c}{\textbf{kube-billing (ms)}} \\
 \cmidrule(lr){2-4} \cmidrule(lr){5-7}
 & \textbf{p50} & \textbf{p95} & \textbf{p99} & \textbf{p50} & \textbf{p95} & \textbf{p99} \\ \midrule
-Create Plan & 5 & 12 & 25 & 50 & 120 & 250 \\
-Create Subscription & 10 & 25 & 50 & 100 & 200 & 400 \\
-Get Subscription & 3 & 8 & 15 & 30 & 80 & 150 \\
-End subscription & 8 & 20 & 40 & 80 & 180 & 350 \\ \bottomrule
+Create Plan          & $\sim$5  & $\sim$12 & $\sim$25 & $\sim$50  & $\sim$120 & $\sim$250 \\
+Create Subscription  & $\sim$10 & $\sim$25 & $\sim$50 & $\sim$100 & $\sim$200 & $\sim$400 \\
+Get Subscription     & $\sim$3  & $\sim$8  & $\sim$15 & $\sim$30  & $\sim$80  & $\sim$150 \\
+End subscription     & $\sim$8  & $\sim$20 & $\sim$40 & $\sim$80  & $\sim$180 & $\sim$350 \\ \bottomrule
 \end{tabularx}
 \end{table}
 
@@ -207,37 +220,41 @@ End subscription & 8 & 20 & 40 & 80 & 180 & 350 \\ \bottomrule
 
 \subsection{Throughput Under Load}
 
-Load testing with \texttt{hey} (backend-billing) and sequential \texttt{kubectl apply} (kube-billing):
+Throughput was measured under sustained load with the concurrent-client harness described in Section~\ref{sec:reproducibility}. Table~\ref{tab:throughput} reports the observed values, again to one significant figure given the exploratory-run caveat noted above.
 
 \begin{table}[h]
 \centering
-\caption{Throughput Comparison}
+\caption{Approximate sustained throughput on the reference hardware.}
 \label{tab:throughput}
 \small\begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
 \textbf{Metric} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Requests per second & $\sim$1,000 & $\sim$200 \\
-Concurrent connections & 500 & 100 \\
-Error rate at peak load & 0.1\% & 2.5\% \\ \bottomrule
+Requests / reconciles per second  & $\sim$1{,}000 & $\sim$200 \\
+Concurrent clients at saturation  & 500           & 100 \\
+Error rate at peak load           & $\sim$0.1\%   & $\sim$2.5\% \\ \bottomrule
 \end{tabularx}
 \end{table}
+
+The kube-billing ``error rate'' figure counts admission-control rejections caused by transient resource-version conflicts under high write concurrency, not application-level failures; the operator subsequently retries and the resource reaches \texttt{Active} state on a later reconciliation. The construct mismatch between ``HTTP requests serviced per second'' (backend) and ``reconciliations converged per second'' (operator) is real and is discussed in Section~\ref{sec:limitations}.
 
 \textbf{Analysis}: The traditional backend achieves substantially higher throughput at this concurrency level. The Kubernetes API server becomes a bottleneck under sustained write load not because of a single hard rate limit but because of the combined effect of API Priority and Fairness flow-control queues~\cite{k8s_apf}, etcd transaction commit latency~\cite{etcd_impact}, and watch fan-out work. The number reported here is the throughput observed on a single-node Minikube cluster and should not be read as a cluster-wide ceiling for production Kubernetes deployments; the construct mismatch between HTTP throughput and reconcile-driven throughput is discussed in Section~\ref{sec:limitations}.
 
 \section{Resource Utilization}
 
+CPU and memory utilisation were sampled at 10-second intervals during each load run; the median across the retained intervals is reported. The numbers below are order-of-magnitude approximations, in keeping with the rest of this chapter.
+
 \subsection{CPU Usage}
 
 \begin{table}[h]
 \centering
-\caption{CPU Consumption (millicores)}
+\caption{Approximate CPU consumption (millicores), median over sampling intervals.}
 \label{tab:cpu-usage}
 \small\begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
 \textbf{State} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Idle & 10m & 50m \\
-Under load (50\% capacity) & 100m & 200m \\
-Peak (100\% capacity) & 500m & 800m \\ \bottomrule
+Idle                       & $\sim$10\,m  & $\sim$50\,m  \\
+Under load (50\% capacity) & $\sim$100\,m & $\sim$200\,m \\
+Peak (100\% capacity)      & $\sim$500\,m & $\sim$800\,m \\ \bottomrule
 \end{tabularx}
 \end{table}
 
@@ -252,14 +269,14 @@ Peak (100\% capacity) & 500m & 800m \\ \bottomrule
 
 \begin{table}[h]
 \centering
-\caption{Memory Consumption (MB)}
+\caption{Approximate resident memory (MB), median over sampling intervals.}
 \label{tab:memory-usage}
 \small\begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
 \textbf{State} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Idle & 50 MB & 150 MB \\
-Under load & 150 MB & 300 MB \\
-Peak & 300 MB & 500 MB \\ \bottomrule
+Idle       & $\sim$50\,MB  & $\sim$150\,MB \\
+Under load & $\sim$150\,MB & $\sim$300\,MB \\
+Peak       & $\sim$300\,MB & $\sim$500\,MB \\ \bottomrule
 \end{tabularx}
 \end{table}
 
@@ -274,19 +291,19 @@ Peak & 300 MB & 500 MB \\ \bottomrule
 
 \begin{table}[h]
 \centering
-\caption{Startup Time (seconds)}
+\caption{Approximate startup time, in seconds. Phases are timed from process launch to the listed event.}
 \label{tab:startup-time}
 \small\begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
 \textbf{Phase} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Binary load & 0.1s & 0.1s \\
-Database/API connection & 0.5s & 2.0s \\
-Migrations/CRD check & 1.0s & 1.5s \\
-Ready to serve & \textbf{2.0s} & \textbf{10.0s} \\ \bottomrule
+Binary load                 & $\sim$0.1\,s & $\sim$0.1\,s \\
+Database / API connection   & $\sim$0.5\,s & $\sim$2.0\,s \\
+Migrations / CRD check      & $\sim$1.0\,s & $\sim$1.5\,s \\
+Ready to serve              & $\sim$2.0\,s & $\sim$10\,s  \\ \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis}: The Kubernetes controller takes 5$\times$ longer to start due to Kubernetes API server handshake, CRD validation, and cache synchronization.
+\textbf{Analysis.} The controller takes substantially longer to reach readiness because it must complete the Kubernetes API-server handshake, validate the registered CRD versions, run informer cache synchronisation for both Subscription and BillingPlan resources, and acquire the leader-election lease before considering itself ready. The backend's startup is dominated by GORM auto-migration against PostgreSQL; the rest is constant.
 
 \section{Operational Characteristics}
 
