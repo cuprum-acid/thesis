@@ -41,6 +41,46 @@ All experiments were conducted on identical hardware to ensure fair comparison:
     \item \textbf{kubectl top pods} --- Kubernetes metrics-server-backed CPU and memory sampling for the controller pod.
 \end{itemize}
 
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=10mm and 18mm,
+    box/.style={rectangle, draw, rounded corners, minimum width=30mm, minimum height=7mm, align=center, font=\small},
+    drv/.style={box, fill=gray!10},
+    sut/.style={box, fill=blue!8},
+    ctrl/.style={box, fill=green!8},
+    store/.style={box, fill=orange!10},
+    sample/.style={rectangle, draw, dashed, rounded corners, fill=green!4, align=center, font=\scriptsize, minimum width=22mm, minimum height=10mm},
+    arr/.style={-{Stealth[length=2.5mm]}, thick, font=\scriptsize},
+    obs/.style={-{Stealth[length=2mm]}, dashed, thick, font=\scriptsize}
+]
+    % left lane: backend-billing
+    \node[drv] (hey) {\texttt{hey -n5000 -c50}};
+    \node[sut, below=of hey] (be) {backend-billing};
+    \node[store, below=of be] (pg) {PostgreSQL 15};
+    \node[sample, left=10mm of be] (ds) {docker stats\\(10\,s sample)};
+
+    \draw[arr] (hey) -- node[right] {HTTP POST} (be);
+    \draw[arr] (be) -- node[right] {SQL} (pg);
+    \draw[obs] (be) -- (ds);
+
+    % right lane: kube-billing
+    \node[drv, right=50mm of hey] (gh) {Go harness\\(client-go, c=50)};
+    \node[sut, below=of gh] (api) {apiserver};
+    \node[store, below=of api] (etcd) {etcd};
+    \node[ctrl, right=of api] (ctlr) {kube-billing\\controller};
+    \node[sample, right=10mm of etcd] (kt) {kubectl top\\(10\,s sample)};
+
+    \draw[arr] (gh) -- node[right] {Create CR / watch} (api);
+    \draw[arr] (api) -- node[right] {raft write} (etcd);
+    \draw[arr] ([yshift=2mm]api.east) -- node[above, font=\scriptsize] {watch event} ([yshift=2mm]ctlr.west);
+    \draw[arr] ([yshift=-2mm]ctlr.west) -- node[below, font=\scriptsize] {Status().Update} ([yshift=-2mm]api.east);
+    \draw[obs] (ctlr) -- (kt);
+\end{tikzpicture}
+\caption{Benchmark harness layout. The two systems are driven by independent load programs (\texttt{hey} for backend-billing; a Go program using client-go for kube-billing) and have independent persistent stores. Resource-utilisation samplers (\texttt{docker stats} and \texttt{kubectl top pods}, dashed) collect at 10-second intervals in parallel with the load run. The Go harness measures end-to-end time from \texttt{Create()} returning to the watch event reporting \texttt{status.state == Active}, recording each subscription individually to avoid coordinated omission~\cite{tene_latency}. Microbenchmarks are not shown: they run in-process via \texttt{go test -bench} on the same code without involving the driver or the store.}
+\label{fig:bench-harness}
+\end{figure}
+
 \subsection{Reproducibility}\label{sec:reproducibility}
 
 The following parameters define the environment so that the experiments can be reproduced from the published source repositories.
