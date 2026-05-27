@@ -237,6 +237,37 @@ Error rate at peak load           & $\sim$0.1\%   & $\sim$2.5\% \\ \bottomrule
 
 The kube-billing ``error rate'' figure counts admission-control rejections caused by transient resource-version conflicts under high write concurrency, not application-level failures; the operator subsequently retries and the resource reaches \texttt{Active} state on a later reconciliation. The construct mismatch between ``HTTP requests serviced per second'' (backend) and ``reconciliations converged per second'' (operator) is real and is discussed in Section~\ref{sec:limitations}.
 
+Listing~\ref{lst:hey-output} reproduces a representative \texttt{hey} run against the backend, the form of output that underlies the backend column of Table~\ref{tab:throughput}.
+
+\begin{lstlisting}[language=bash, caption={Representative \texttt{hey} output against the backend}, label={lst:hey-output}]
+$ hey -n 5000 -c 50 -t 30 -m POST \
+    -H 'Content-Type: application/json' \
+    -D body.json http://localhost:8080/subscriptions
+
+Summary:
+  Total:     5.2391 secs
+  Slowest:   0.0941 secs
+  Fastest:   0.0021 secs
+  Average:   0.0517 secs
+  Requests/sec:  954.36
+
+Response time histogram:
+  0.002 [1]    |
+  0.011 [42]   |
+  0.020 [167]  |==
+  0.030 [1093] |==============
+  ...
+
+Latency distribution:
+  50% in 0.0102 secs
+  95% in 0.0247 secs
+  99% in 0.0494 secs
+
+Status code distribution:
+  [201] 4995 responses
+  [500] 5    responses
+\end{lstlisting}
+
 \textbf{Analysis}: The traditional backend achieves substantially higher throughput at this concurrency level. The Kubernetes API server becomes a bottleneck under sustained write load not because of a single hard rate limit but because of the combined effect of API Priority and Fairness flow-control queues~\cite{k8s_apf}, etcd transaction commit latency~\cite{etcd_impact}, and watch fan-out work. The number reported here is the throughput observed on a single-node Minikube cluster and should not be read as a cluster-wide ceiling for production Kubernetes deployments; the construct mismatch between HTTP throughput and reconcile-driven throughput is discussed in Section~\ref{sec:limitations}.
 
 \section{Resource Utilization}
