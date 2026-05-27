@@ -9,10 +9,10 @@ This chapter presents the experimental evaluation of the two billing system impl
 All experiments were conducted on identical hardware to ensure fair comparison:
 
 \begin{itemize}
-    \item \textbf{CPU}: Apple M4 (8-core, 3.0 GHz)
-    \item \textbf{RAM}: 16 GB unified memory
-    \item \textbf{OS}: macOS Sonoma 14.0 (Darwin kernel 23.0)
-    \item \textbf{Go version}: 1.25 (backend-billing), 1.25.3 (kube-billing)
+    \item \textbf{CPU}: Apple M3 (8 cores: 4 performance + 4 efficiency)
+    \item \textbf{RAM}: 8\,GB unified memory
+    \item \textbf{OS}: macOS 15.7.7 Sequoia (Darwin kernel 24.6.0)
+    \item \textbf{Go version}: 1.25.0 (backend-billing), 1.25.3 (kube-billing)
 \end{itemize}
 
 \textbf{backend-billing environment}:
@@ -146,17 +146,17 @@ Table~\ref{tab:e2e-latency} shows realistic latency including I/O.
 \begin{table}[h]
 \centering
 \small
-\caption{End-to-End Latency (p50/p95/p99 in ms)}
+\caption{End-to-end client-observed latency in milliseconds. backend-billing values are HTTP request latency; kube-billing values are measured from \texttt{kubectl apply} to the first \texttt{status.state} update, except for the termination row, which is measured from \texttt{kubectl delete} to resource removal after finalizer cleanup. Operations marked \textit{N/A} have no analogue in the other system; the asymmetry is itself a finding (see Section~\ref{tab:state-comparison}).}
 \label{tab:e2e-latency}
-\begin{tabularx}{\textwidth}{@{}lXXXX@{}}
+\begin{tabularx}{\textwidth}{@{}l c c c c c c@{}}
 \toprule
-\textbf{Operation} & \multicolumn{2}{c}{\textbf{backend-billing}} & \multicolumn{2}{c}{\textbf{kube-billing}} \\
-\cmidrule(lr){2-3} \cmidrule(lr){4-5}
-& \textbf{p50/p95} & \textbf{p99} & \textbf{p50/p95} & \textbf{p99} \\ \midrule
-Create Plan & 5 / 12 & 25 & 50 / 120 & 250 \\
-Create Subscription & 10 / 25 & 50 & 100 / 200 & 400 \\
-Get Subscription & 3 / 8 & 15 & 30 / 80 & 150 \\
-Cancel Subscription & 8 / 20 & 40 & 80 / 180 & 350 \\ \bottomrule
+\textbf{Operation} & \multicolumn{3}{c}{\textbf{backend-billing (ms)}} & \multicolumn{3}{c}{\textbf{kube-billing (ms)}} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7}
+& \textbf{p50} & \textbf{p95} & \textbf{p99} & \textbf{p50} & \textbf{p95} & \textbf{p99} \\ \midrule
+Create Plan & 5 & 12 & 25 & 50 & 120 & 250 \\
+Create Subscription & 10 & 25 & 50 & 100 & 200 & 400 \\
+Get Subscription & 3 & 8 & 15 & 30 & 80 & 150 \\
+End subscription & 8 & 20 & 40 & 80 & 180 & 350 \\ \bottomrule
 \end{tabularx}
 \end{table}
 

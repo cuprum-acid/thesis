@@ -1,6 +1,6 @@
 \chapter{Methodology}\label{chap:met}
 
-This chapter describes the research methodology, system design, and architectural decisions used to evaluate Kubernetes as a platform for implementing business logic. The chapter expands upon the high-level methodology outlined in Chapter~\ref{chap:lr} and Section~1.5, providing a detailed description of both the Kubernetes-based system and the traditional baseline system.
+This chapter describes the research methodology, system design, and architectural decisions used to evaluate Kubernetes as a platform for implementing business logic. The chapter expands upon the high-level methodology outlined in Chapter~\ref{chap:intro}, Section~\ref{sec:methodology}, providing a detailed description of both the Kubernetes-based system and the traditional baseline system.
 
 \section{Research Approach}
 
@@ -39,12 +39,29 @@ The implemented business logic includes:
 
 \begin{itemize}
     \item \textbf{Activation}: Upon creation of a subscription, the system validates the referenced billing plan, activates the subscription, and initializes billing timestamps.
-    \item \textbf{Billing Cycle Management}: The system tracks last payment and next billing dates.
-    \item \textbf{Expiration Handling}: Subscriptions transition to an expired state when billing conditions are not met.
-    \item \textbf{Final Charge Handling}: Upon deletion, a final billing operation is executed before resource removal.
+    \item \textbf{Billing Cycle Management}: The system tracks the last successful payment and the scheduled next billing time, advancing both whenever a billing cycle completes.
+    \item \textbf{Termination}: A subscription leaves the active state either because the user explicitly ends it or because the system detects a terminal condition (a missed billing deadline or a payment failure).
 \end{itemize}
 
-This logic was implemented identically in both systems but using different architectural approaches.
+The two systems implement the same conceptual lifecycle but expose it through different mechanisms, and this asymmetry is itself a finding of the comparison. Table~\ref{tab:state-comparison} enumerates the observable states in each implementation.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Subscription lifecycle states in each implementation}
+\label{tab:state-comparison}
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Stage} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
+Initial & \texttt{Active} (set on creation) & \texttt{Active} (set by first reconciliation) \\
+User-initiated end & \texttt{Canceled} (via \texttt{POST /subscriptions/\{id\}/cancel}) & resource deletion guarded by a finalizer; a pro-rated refund event is emitted before removal \\
+Missed billing deadline & \texttt{Expired} (set by background worker once per minute) & not modelled as a state; the reconciler keeps re-attempting billing \\
+Payment processing error & not modelled & \texttt{PaymentError} (price parse or charge failure) \\
+Referenced plan missing & request rejected at admission (404) & \texttt{Error} with condition \texttt{BillingPlanNotFound = True} \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+The asymmetry reflects an architectural truth: in a REST-and-database design, cancellation and expiration are in-band state transitions that must be modelled explicitly; in a controller-based design, cancellation can ride on Kubernetes' built-in resource lifecycle via finalizers, while transient failures are surfaced through Conditions and re-attempted by the reconcile loop rather than being persisted as terminal states. Chapter~\ref{chap:eval} discusses how this distinction affects the comparative evaluation.
 
 \section{Traditional System Architecture}
 
@@ -180,11 +197,11 @@ The \texttt{Subscription} CRD enforces strict validation:
 
 \textbf{Status subresource} (managed by controller):
 \begin{itemize}
-    \item \texttt{status.state} (string): Enum (Active, PaymentError, Error)
-    \item \texttt{status.lastPayment} (timestamp): Time of last successful billing
-    \item \texttt{status.nextBilling} (timestamp): Scheduled time for next billing cycle
-    \item \texttt{status.observedGeneration} (integer): Tracks status freshness against spec
-    \item \texttt{status.conditions} (array): Standard conditions (\texttt{Active}, \texttt{BillingPlanNotFound}, \texttt{PaymentError})
+    \item \texttt{status.state} (string): The current lifecycle state. The controller writes one of \texttt{Active}, \texttt{PaymentError}, or \texttt{Error}; the CRD schema does not constrain the field with an enum so that future state values can be introduced without a CRD version bump.
+    \item \texttt{status.lastPayment} (timestamp): Time of last successful billing.
+    \item \texttt{status.nextBilling} (timestamp): Scheduled time for next billing cycle.
+    \item \texttt{status.observedGeneration} (integer): Tracks status freshness against \texttt{spec}.
+    \item \texttt{status.conditions} (array of \texttt{metav1.Condition}): Standardised condition types \texttt{Active}, \texttt{BillingPlanNotFound}, \texttt{PaymentError}, each with \texttt{True/False/Unknown} status, a machine-readable \texttt{reason}, and a human-readable \texttt{message}.
 \end{itemize}
 
 \subsection{Operator Controller Implementation}
@@ -506,11 +523,12 @@ Experimental evaluation was conducted in a controlled local environment to compa
 
 \subsection{Evaluation Environment}
 
-Both systems were deployed and tested on identical hardware:
+Both systems were deployed and tested on identical hardware. Full reproducibility details, including workload generator parameters and the number of repeated trials, are documented in Section~\ref{sec:reproducibility}.
+
 \begin{itemize}
-    \item \textbf{CPU}: Apple M4 (single-core performance isolated for benchmarks)
-    \item \textbf{RAM}: 16GB unified memory
-    \item \textbf{OS}: macOS (Darwin kernel)
+    \item \textbf{CPU}: Apple M3 (8 cores: 4 performance + 4 efficiency)
+    \item \textbf{RAM}: 8\,GB unified memory
+    \item \textbf{OS}: macOS 15.7.7 Sequoia (Darwin 24.6.0)
     \item \textbf{Kubernetes}: Minikube v1.33.1 (for kube-billing)
     \item \textbf{Docker}: Docker Desktop v27.5.0 (for backend-billing)
 \end{itemize}

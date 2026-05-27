@@ -60,7 +60,7 @@ The expected contributions of this work include:
     \item Insights into the boundaries of Kubernetes extensibility and the Infrastructure-as-Code paradigm.
 \end{itemize}
 
-\section{Research Methodology}
+\section{Research Methodology}\label{sec:methodology}
 
 This research employs a mixed-methods approach combining system design, implementation, and experimental evaluation:
 
@@ -78,17 +78,15 @@ This research employs a mixed-methods approach combining system design, implemen
 
 The remainder of this thesis is organized as follows:
 
-\textbf{Chapter 2 — Literature Review}: Provides comprehensive background on Kubernetes architecture, Custom Resource Definitions, the Operator pattern, and related work in extending Kubernetes for business logic. Reviews relevant observability tools and GitOps practices.
+\textbf{Chapter~\ref{chap:lr} --- Literature Review}: Provides background on Kubernetes architecture, Custom Resource Definitions, the Operator pattern, related approaches (Infrastructure-as-Code, GitOps, service meshes), and observability tooling. Identifies the gaps that motivate this work.
 
-\textbf{Chapter 3 — Methodology}: Describes the design of both the CRD/Operator-based system and the traditional baseline system. Details the business logic domain selected for implementation and architectural decisions.
+\textbf{Chapter~\ref{chap:met} --- Methodology}: Describes the research approach, the chosen business domain (billing and subscription management), and the high-level architectural decisions for both the Kubernetes-based system and the traditional baseline. Outlines the evaluation framework.
 
-\textbf{Chapter 4 — Implementation}: Covers implementation details including CRD specifications, Operator controller logic, observability instrumentation, and deployment configuration.
+\textbf{Chapter~\ref{chap:impl} --- Implementation}: Covers implementation details including CRD schemas, controller logic, observability instrumentation, deployment manifests, and the corresponding traditional REST/PostgreSQL stack.
 
-\textbf{Chapter 5 — Experimental Evaluation}: Presents the experimental setup, methodology, and results of performance comparisons between the two approaches.
+\textbf{Chapter~\ref{chap:eval} --- Evaluation and Discussion}: Presents the experimental setup, methodology, and results of the comparative evaluation across code metrics, performance, resource utilization, and operational characteristics, together with the analysis and discussion of those results.
 
-\textbf{Chapter 6 — Discussion}: Analyzes results, discusses implications, identifies suitable use cases, and provides recommendations for practitioners.
-
-\textbf{Chapter 7 — Conclusion}: Summarizes key findings, discusses limitations, and suggests directions for future work.
+\textbf{Chapter~\ref{chap:conclusion} --- Conclusion}: Answers the research questions, summarizes the contributions and limitations, and suggests directions for future work.
 
 \section{Summary}
 

@@ -128,16 +128,24 @@ PlanRef string
 \textbf{Status subresource}:
 \begin{lstlisting}[language=Go]
 type SubscriptionStatus struct {
-    State              SubscriptionState `json:"state,omitempty"`
-    LastPayment        *metav1.Time      `json:"lastPayment,omitempty"`
-    NextBilling        *metav1.Time      `json:"nextBilling,omitempty"`
-    ObservedGeneration int64             `json:"observedGeneration,omitempty"`
     Conditions         []metav1.Condition `json:"conditions,omitempty"`
+    State              string             `json:"state,omitempty"`
+    LastPayment        metav1.Time        `json:"lastPayment,omitempty"`
+    NextBilling        metav1.Time        `json:"nextBilling,omitempty"`
+    ObservedGeneration int64              `json:"observedGeneration,omitempty"`
 }
 
-// +kubebuilder:validation:Enum=Active;PaymentError;Error
-type SubscriptionState string
+// Controller-side constants; the CRD schema deliberately leaves
+// state as an unconstrained string so new values can be added
+// without bumping the API version.
+const (
+    SubscriptionStateActive       = "Active"
+    SubscriptionStatePaymentError = "PaymentError"
+    SubscriptionStateError        = "Error"
+)
 \end{lstlisting}
+
+\texttt{LastPayment} and \texttt{NextBilling} are stored as \texttt{metav1.Time} value types rather than pointers; the zero value is detected with \texttt{Time.IsZero()} during reconciliation, which avoids the nil-dereference hazard noted in earlier drafts of the controller.
 
 \subsection{Controller Implementation}
 
