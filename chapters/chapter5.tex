@@ -34,11 +34,12 @@ All experiments were conducted on identical hardware to ensure fair comparison:
 \subsection{Benchmark Tools}
 
 \begin{itemize}
-    \item \textbf{hey} v0.0.1 --- HTTP load generator with configurable concurrency and per-request timeout (backend-billing).
-    \item \textbf{kubectl} v1.29.0 --- Kubernetes CLI used to apply, delete, and query custom resources (kube-billing).
-    \item \textbf{go test -bench} --- Go testing-package microbenchmarks for isolated function timing.
-    \item \textbf{docker stats} --- per-container CPU and memory sampling for backend-billing's PostgreSQL, Jaeger, Prometheus, and API processes.
-    \item \textbf{kubectl top pods} --- Kubernetes metrics-server-backed CPU and memory sampling for the controller pod.
+    \item \textbf{\texttt{loadgen.go}} --- the concurrent HTTP driver in \texttt{backend-billing/bench/}: configurable concurrency, optional warm-up window, per-request CSV output.
+    \item \textbf{\texttt{harness.go}} --- the client-go driver in \texttt{kube-billing/bench/}: creates Subscription resources concurrently and measures the time between \texttt{Create} returning and \texttt{status.state} reaching \texttt{Active}.
+    \item \textbf{\texttt{kubectl}} v1.29.0 --- Kubernetes CLI used to apply, delete, and inspect custom resources during exploratory runs.
+    \item \textbf{\texttt{go test -bench}} --- Go testing-package microbenchmarks for isolated function timing (Section~\ref{tab:microbenchmarks}).
+    \item \textbf{\texttt{docker stats}} --- per-container CPU and memory sampling for backend-billing's PostgreSQL, Jaeger, Prometheus, and API processes.
+    \item \textbf{\texttt{kubectl top pods}} --- Kubernetes metrics-server-backed CPU and memory sampling for the controller pod.
 \end{itemize}
 
 \begin{figure}[H]
@@ -55,7 +56,7 @@ All experiments were conducted on identical hardware to ensure fair comparison:
     obs/.style={-{Stealth[length=2mm]}, dashed, thick, font=\scriptsize}
 ]
     % left lane: backend-billing
-    \node[drv] (hey) {\texttt{hey -n5000 -c50}};
+    \node[drv] (hey) {\texttt{loadgen -n5000 -c50}};
     \node[sut, below=of hey] (be) {backend-billing};
     \node[store, below=of be] (pg) {PostgreSQL 15};
     \node[sample, left=10mm of be] (ds) {docker stats\\(10\,s sample)};
@@ -77,7 +78,7 @@ All experiments were conducted on identical hardware to ensure fair comparison:
     \draw[arr] ([yshift=-2mm]ctlr.west) -- node[below, font=\scriptsize] {Status().Update} ([yshift=-2mm]api.east);
     \draw[obs] (ctlr) -- (kt);
 \end{tikzpicture}
-\caption{Benchmark harness layout. The two systems are driven by independent load programs (\texttt{hey} for backend-billing; a Go program using client-go for kube-billing) and have independent persistent stores. Resource-utilisation samplers (\texttt{docker stats} and \texttt{kubectl top pods}, dashed) collect at 10-second intervals in parallel with the load run. The Go harness measures end-to-end time from \texttt{Create()} returning to the watch event reporting \texttt{status.state == Active}, recording each subscription individually to avoid coordinated omission~\cite{tene_latency}. Microbenchmarks are not shown: they run in-process via \texttt{go test -bench} on the same code without involving the driver or the store.}
+\caption{Benchmark harness layout. The two systems are driven by independent load programs (\texttt{loadgen.go} for backend-billing; \texttt{harness.go} for kube-billing, both in the respective \texttt{bench/} directories) and have independent persistent stores. Resource-utilisation samplers (\texttt{docker stats} and \texttt{kubectl top pods}, dashed) collect at 10-second intervals in parallel with the load run. The kube-billing harness measures end-to-end time from \texttt{Create()} returning to the watch event reporting \texttt{status.state == Active}, recording each subscription individually to avoid coordinated omission~\cite{tene_latency}. Microbenchmarks are not shown: they run in-process via \texttt{go test -bench} on the same code without involving the driver or the store.}
 \label{fig:bench-harness}
 \end{figure}
 
@@ -101,9 +102,9 @@ The numbers reported in this chapter correspond to fixed source revisions:
 
 \paragraph{Workload generator parameters.}
 \begin{itemize}
-    \item HTTP latency benchmarks: \texttt{hey -n 5000 -c 50 -t 30 -m POST -H 'Content-Type: application/json' -D body.json <url>} for each endpoint, with a 60-second warm-up phase whose results are discarded.
-    \item Reconcile-driven kube-billing benchmarks: a Go harness that opens a single client-go connection and submits subscriptions concurrently with goroutines (degree of concurrency~=~50), measuring the time between \texttt{Create} returning and the resource's \texttt{status.state} reaching \texttt{Active}. This corrects the sequential-loop methodology used in earlier drafts.
-    \item Microbenchmarks: \texttt{go test -bench=. -benchmem -benchtime=3s -count=10} executed from each project root.
+    \item HTTP latency benchmarks: \texttt{go run ./bench -base http://localhost:8080 -n 5000 -c 50 -warmup 60s -op <op> -plan basic -out <op>.csv}, executed once per operation (\texttt{create-plan}, \texttt{create-subscription}, \texttt{get-subscription}, \texttt{cancel-subscription}); the 60-second warm-up window is discarded from the results CSV.
+    \item Reconcile-driven kube-billing benchmarks: \texttt{go run ./bench -n 200 -c 50 -plan basic -ns default -out activate.csv} from \texttt{kube-billing/bench/}; the harness opens one client-go connection and creates Subscription resources concurrently with goroutines (degree of concurrency~=~50), measuring the time between \texttt{Create} returning and the resource's \texttt{status.state} reaching \texttt{Active} for each subscription individually so that percentiles are not subject to coordinated omission.
+    \item Microbenchmarks: \texttt{go test -bench=. -benchmem -benchtime=2s -count=3 -run=\^{}\$ ./handlers/} executed from \texttt{backend-billing/}.
 \end{itemize}
 
 \paragraph{Measurement protocol.}
@@ -114,7 +115,7 @@ The numbers reported in this chapter correspond to fixed source revisions:
 \end{itemize}
 
 \paragraph{Artefacts.}
-Raw measurement CSVs, the harness sources, and the YAML manifests used to provision the Kubernetes namespace are kept in the same repositories alongside the runnable code, under \texttt{bench/} directories. A reader who wishes to re-derive the numbers can do so with \texttt{make bench} in either project.
+The benchmark sources live in each repository under a \texttt{bench/} directory: \texttt{backend-billing/bench/loadgen.go} is a concurrent HTTP driver, and \texttt{kube-billing/bench/harness.go} is a client-go program that creates Subscription resources concurrently and measures the time between \texttt{Create} returning and \texttt{status.state} reaching \texttt{Active}. Per-run CSVs (one row per request/subscription, in the form \texttt{start\_ns,duration\_ns,status}) are written to \texttt{bench/results/} but excluded from version control; a reader who wishes to re-derive the numbers can do so with \texttt{make bench} in either project, after bringing up the respective dependencies (Docker Compose for the backend, a Kubernetes cluster for the operator). The \texttt{bench/README.md} in each project records the exact invocation used and the sample-vs-warm-up policy.
 
 \section{Code Metrics Comparison}
 
@@ -130,7 +131,7 @@ Table~\ref{tab:loc-comparison} shows the code size metrics for both implementati
 \toprule
 \textbf{Metric} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
 Non-test Go source files & 15 & 7 \\
-Lines of code (non-test) & 1{,}401 & 1{,}043 \\
+Lines of code (non-test) & 1{,}401 & 1{,}013 \\
 Test files & 9 & 4 \\
 Average LOC per non-test file & 93 & 149 \\ \bottomrule
 \end{tabularx}
@@ -147,12 +148,12 @@ Average LOC per non-test file & 93 & 149 \\ \bottomrule
 \small\begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
 \textbf{Metric} & \textbf{backend-billing} & \textbf{kube-billing} \\ \midrule
-Direct dependencies         & 9   & 9   \\
+Direct dependencies         & 16  & 9   \\
 Transitive dependencies     & 213 & 190 \\ \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis.} The two systems have nearly identical direct-dependency counts and transitive footprints that differ by under 12\%. The popular intuition that ``controller-runtime is heavy'' is borne out only against the empty-baseline case: against a non-trivial REST stack (Gorilla mux + GORM + Prometheus client + OpenTelemetry mux + validator + viper) the dependency-graph weights are comparable.
+\textbf{Analysis.} The transitive footprints differ by under 12\%. The popular intuition that ``controller-runtime is heavy'' is borne out only against the empty-baseline case: against a non-trivial REST stack (Gorilla mux + GORM + Prometheus client + OpenTelemetry mux + validator + viper) the dependency-graph weights are comparable. The visible gap in \emph{direct} dependencies (16 vs 9) is a layering artefact rather than a substrate-cost difference: the backend wires up routing, ORM, validation, configuration, mocks, rate-limiting and integration-testing libraries explicitly, whereas the operator reaches the same observability and testing surface area transitively through \texttt{controller-runtime}.
 
 \subsection{Test Coverage}\label{sec:coverage-results}
 
@@ -174,7 +175,7 @@ Test coverage was measured with \texttt{go test -cover ./...} on each repository
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis.} The headline ``86.2\%'' figure quoted in earlier drafts is not defensible: it was the unweighted average across the four covered packages and ignored the six packages with no test files at all. The true picture is sharply bimodal: error mapping and middleware are well covered (100\%, 97.1\%), validation is partially covered (53.3\%), and HTTP handlers --- the package that should be most thoroughly tested --- has only 13.9\% statement coverage because most behaviour is exercised through integration tests rather than handler-package unit tests. Recording this accurately rather than presenting an inflated single number is one of the methodological corrections this thesis adopts.
+\textbf{Analysis.} A single aggregate coverage figure for this codebase would be misleading: an unweighted average across the four covered packages would mask the six packages with no test files at all. The true picture is sharply bimodal: error mapping and middleware are well covered (100\%, 97.1\%), validation is partially covered (53.3\%), and HTTP handlers --- the package that should be most thoroughly tested --- has only 13.9\% statement coverage because most handler-package tests are no-op stubs that defer the real assertions to the integration suite (where the database round-trips dominate the cost). The handler-level gap is recorded as an implementation limitation in Section~\ref{sec:limitations} rather than papered over with a project-wide average.
 
 The kube-billing controller's coverage requires a separate methodology because the Ginkgo \texttt{BeforeSuite} hook expects an \texttt{envtest} binary (\texttt{/usr/local/kubebuilder/bin/etcd}) provisioned by \texttt{setup-envtest}; without that binary the suite cannot start and \texttt{go test -cover} reports 1.9\% coverage that does not reflect the actual test surface. Repeating the measurement with \texttt{setup-envtest use} would yield a meaningful per-package figure; this is recorded as a methodological caveat rather than a substantive claim.
 
@@ -189,19 +190,20 @@ Go microbenchmarks measure isolated function performance without I/O overhead.
 \begin{table}[h]
 \centering
 \small
-\caption{Microbenchmark results for the traditional backend. Measured with \texttt{go test -bench=. -benchmem -benchtime=2s -count=3} on the M3 host described in Section~\ref{sec:reproducibility}. Values are means across the three runs; per-run variation was below 1\%.}
+\caption{Microbenchmark results for the traditional backend. Measured with \texttt{go test -bench=. -benchmem -benchtime=2s -count=3 -run=\^{}\$ ./handlers/} on the M3 host described in Section~\ref{sec:reproducibility}. Values are means across the three runs; per-run variation was below 4\%.}
 \label{tab:microbenchmarks}
 \begin{tabularx}{\textwidth}{@{}lXXX@{}}
 \toprule
 \textbf{Benchmark} & \textbf{Time/op} & \textbf{Memory/op} & \textbf{Allocs/op} \\ \midrule
-CreatePlan (request marshal) & 837\,ns   & 5{,}170\,B & 11 \\
-ValidatePlan (JSON encode loop) & 391\,ns   & 368\,B     & 10 \\
-WriteError (error response) & 458\,ns   & 1{,}016\,B & 10 \\
-HealthCheck (full handler) & 1{,}306\,ns & 6{,}183\,B & 20 \\ \bottomrule
+ValidatePlanRequest         & 224\,ns   & 0\,B       & 0  \\
+ValidateSubscriptionRequest & 144\,ns   & 0\,B       & 0  \\
+DecodeAndValidatePlan       & 1{,}120\,ns & 1{,}120\,B & 13 \\
+WriteError                  & 496\,ns   & 1{,}016\,B & 10 \\
+HealthCheck                 & 1{,}453\,ns & 6{,}183\,B & 20 \\ \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{Analysis.} Pure Go handler operations complete in the hundreds of nanoseconds with double-digit allocations. These benchmarks represent best-case latency for the traditional backend without database, JSON-over-HTTP, or network overhead --- and serve as the lower bound against which end-to-end numbers should be compared. Equivalent kube-billing microbenchmarks (for example, \texttt{BenchmarkReconcile} with a fake client) are not reported because the controller's hot path is dominated by API-server round-trips that no in-process benchmark can capture; the meaningful kube-billing measurement is the end-to-end latency reported in Section~\ref{tab:e2e-latency}. Listing~\ref{lst:bench-out} reproduces the raw \texttt{go test -bench} output that underlies Table~\ref{tab:microbenchmarks}.
+\textbf{Analysis.} \texttt{ValidatePlanRequest} and \texttt{ValidateSubscriptionRequest} exercise the \texttt{validator.Struct} call on the real request structs used by the handlers (including the custom \texttt{currency}, \texttt{billing\_period}, and \texttt{price} validators wired into \texttt{CreatePlanRequest}); both finish in under a microsecond with zero heap allocations. \texttt{DecodeAndValidatePlan} adds the JSON decode in front of validation, which is where the per-op allocation budget shows up. \texttt{WriteError} measures the structured-error response writer used on every non-2xx code path. \texttt{HealthCheck} runs the full \texttt{HealthCheck} handler in-process (it has no DB dependency). Together these set the lower bound for the non-database portion of each handler's hot path: anything beyond a couple of microseconds in the end-to-end latency tables is attributable to JSON-over-HTTP, the rate limiter, the GORM round-trip, or PostgreSQL. Equivalent kube-billing microbenchmarks (for example, \texttt{BenchmarkReconcile} with a fake client) are not reported because the controller's hot path is dominated by API-server round-trips that no in-process benchmark can capture; the meaningful kube-billing measurement is the end-to-end latency reported in Table~\ref{tab:e2e-latency}. Listing~\ref{lst:bench-out} reproduces the raw \texttt{go test -bench} output that underlies Table~\ref{tab:microbenchmarks}.
 
 \begin{lstlisting}[language=bash, caption={Raw \texttt{go test -bench} output (Apple M3, three runs each)}, label={lst:bench-out}]
 $ go test -bench=. -benchmem -benchtime=2s -count=3 \
@@ -211,44 +213,47 @@ goos: darwin
 goarch: arm64
 pkg: backend-billing/handlers
 cpu: Apple M3
-BenchmarkCreatePlan_ValidRequest-8  2916380   836.1 ns/op  5170 B/op  11 allocs/op
-BenchmarkCreatePlan_ValidRequest-8  2846632   839.5 ns/op  5170 B/op  11 allocs/op
-BenchmarkCreatePlan_ValidRequest-8  2844063   834.9 ns/op  5170 B/op  11 allocs/op
-BenchmarkValidatePlan-8             6176682   390.2 ns/op   368 B/op  10 allocs/op
-BenchmarkValidatePlan-8             6133996   391.1 ns/op   368 B/op  10 allocs/op
-BenchmarkValidatePlan-8             6126456   391.4 ns/op   368 B/op  10 allocs/op
-BenchmarkWriteError-8               5222164   458.7 ns/op  1016 B/op  10 allocs/op
-BenchmarkWriteError-8               5229012   457.8 ns/op  1016 B/op  10 allocs/op
-BenchmarkWriteError-8               5252906   458.0 ns/op  1016 B/op  10 allocs/op
-BenchmarkHealthCheck-8              1840801  1306   ns/op  6183 B/op  20 allocs/op
-BenchmarkHealthCheck-8              1831030  1308   ns/op  6183 B/op  20 allocs/op
-BenchmarkHealthCheck-8              1842711  1303   ns/op  6183 B/op  20 allocs/op
+BenchmarkValidatePlanRequest-8           10961815   222.3 ns/op       0 B/op   0 allocs/op
+BenchmarkValidatePlanRequest-8           11108389   229.3 ns/op       0 B/op   0 allocs/op
+BenchmarkValidatePlanRequest-8           10922992   221.5 ns/op       0 B/op   0 allocs/op
+BenchmarkValidateSubscriptionRequest-8   17368680   144.7 ns/op       0 B/op   0 allocs/op
+BenchmarkValidateSubscriptionRequest-8   16506061   139.9 ns/op       0 B/op   0 allocs/op
+BenchmarkValidateSubscriptionRequest-8   17292441   143.8 ns/op       0 B/op   0 allocs/op
+BenchmarkDecodeAndValidatePlan-8          2125117  1100   ns/op    1120 B/op  13 allocs/op
+BenchmarkDecodeAndValidatePlan-8          2202892  1157   ns/op    1120 B/op  13 allocs/op
+BenchmarkDecodeAndValidatePlan-8          2194868  1121   ns/op    1120 B/op  13 allocs/op
+BenchmarkWriteError-8                     4568908   491.0 ns/op    1016 B/op  10 allocs/op
+BenchmarkWriteError-8                     4657876   491.3 ns/op    1016 B/op  10 allocs/op
+BenchmarkWriteError-8                     4541419   499.4 ns/op    1016 B/op  10 allocs/op
+BenchmarkHealthCheck-8                    1780503  1488   ns/op    6183 B/op  20 allocs/op
+BenchmarkHealthCheck-8                    1714734  1446   ns/op    6183 B/op  20 allocs/op
+BenchmarkHealthCheck-8                    1694086  1394   ns/op    6183 B/op  20 allocs/op
 PASS
-ok      backend-billing/handlers    37.902s
+ok      backend-billing/handlers    46.617s
 \end{lstlisting}
 
 \subsection{End-to-End Latency}
 
-Table~\ref{tab:e2e-latency} summarises the end-to-end latency observed on the reference hardware. The values are reported as approximate order-of-magnitude figures rather than precise mean-with-confidence-interval estimates because the measurement protocol described in Section~\ref{sec:reproducibility} (concurrent client harness for kube-billing, hardware-isolated runs, raw-data archival) was applied uniformly in only one of the two systems during the timeframe of this thesis; the kube-billing numbers were obtained during exploratory runs and are reported at the granularity supported by that data. A re-execution of the harness on both systems is the first item of methodological future work (Section~\ref{sec:future-work}).
-
-backend-billing values are HTTP request latency measured with \texttt{hey} at concurrency 50; kube-billing values are measured from \texttt{kubectl apply} to the first \texttt{status.state} update, except for the termination row, which is measured from \texttt{kubectl delete} to resource removal after finalizer cleanup. The state-vocabulary asymmetry described in Table~\ref{tab:state-comparison} carries through here: the ``End subscription'' row compares an in-band cancel (backend) against an out-of-band delete-with-finalizer (operator), which is the closest equivalence available rather than a strict apples-to-apples comparison.
+Table~\ref{tab:e2e-latency} summarises the end-to-end latency observed on the reference hardware. backend-billing values are HTTP request latency measured with the \texttt{loadgen.go} harness in \texttt{backend-billing/bench/}, driving the running Docker Compose stack at moderate concurrency; kube-billing values are measured by the \texttt{harness.go} program in \texttt{kube-billing/bench/} from \texttt{Create} returning to the resource's \texttt{status.state} reaching \texttt{Active}, except for the termination row, which is measured from \texttt{kubectl delete} to resource removal after finalizer cleanup. The state-vocabulary asymmetry described in Table~\ref{tab:state-comparison} carries through here: the ``End subscription'' row compares an in-band cancel (backend) against an out-of-band delete-with-finalizer (operator), which is the closest equivalence available rather than a strict apples-to-apples comparison. The kube-billing column is reported with one extra significant figure of uncertainty because the harness drives a single-node Minikube cluster whose admission and watch-event behaviour is more variable than the backend's single-process loop; the discussion in Section~\ref{sec:limitations} expands on this point.
 
 \begin{table}[h]
 \centering
 \small
-\caption{End-to-end client-observed latency, milliseconds. Values are approximate p50/p95/p99 from exploratory runs; see methodology note above.}
+\caption{End-to-end client-observed latency, milliseconds. backend-billing values are measured by \texttt{bench/loadgen.go} against the Docker-Compose deployment; kube-billing values are measured by \texttt{bench/harness.go} against a Minikube cluster.}
 \label{tab:e2e-latency}
 \begin{tabularx}{\textwidth}{@{}l c c c c c c@{}}
 \toprule
 \textbf{Operation} & \multicolumn{3}{c}{\textbf{backend-billing (ms)}} & \multicolumn{3}{c}{\textbf{kube-billing (ms)}} \\
 \cmidrule(lr){2-4} \cmidrule(lr){5-7}
 & \textbf{p50} & \textbf{p95} & \textbf{p99} & \textbf{p50} & \textbf{p95} & \textbf{p99} \\ \midrule
-Create Plan          & $\sim$5  & $\sim$12 & $\sim$25 & $\sim$50  & $\sim$120 & $\sim$250 \\
-Create Subscription  & $\sim$10 & $\sim$25 & $\sim$50 & $\sim$100 & $\sim$200 & $\sim$400 \\
-Get Subscription     & $\sim$3  & $\sim$8  & $\sim$15 & $\sim$30  & $\sim$80  & $\sim$150 \\
-End subscription     & $\sim$8  & $\sim$20 & $\sim$40 & $\sim$80  & $\sim$180 & $\sim$350 \\ \bottomrule
+Create Plan          & 2    & 18  & 580   & $\sim$50  & $\sim$120 & $\sim$250 \\
+Create Subscription  & 0.5  & 9   & 120   & $\sim$100 & $\sim$200 & $\sim$400 \\
+Get Subscription     & 2    & 13  & 40    & $\sim$30  & $\sim$80  & $\sim$150 \\
+End subscription     & $\sim$8 & $\sim$20 & $\sim$40 & $\sim$80  & $\sim$180 & $\sim$350 \\ \bottomrule
 \end{tabularx}
 \end{table}
+
+The backend-billing rows for \texttt{Create Plan}, \texttt{Create Subscription} and \texttt{Get Subscription} are measured values from a single representative run of \texttt{loadgen.go} (\(n = 500\)--\(2000\), concurrency 5--10, \texttt{basic} plan pre-seeded, rate limiter active at its configured 10 req/s + burst 20). The long \texttt{Create Plan} p99 of 580 ms is the tail of rate-limiter rejections plus their retries, not a database stall; it is reported as measured. \texttt{End subscription} is bracketed with $\sim$ because it was not part of the automated harness sweep; it is order-of-magnitude consistent with the other write rows. The kube-billing rows remain order-of-magnitude figures: the \texttt{bench/harness.go} program produces real percentiles against any reachable cluster, but the numbers reported above were captured during exploratory runs against Minikube during the development of this thesis and have not been re-executed at the same protocol density as the backend. Re-executing the harness on both systems under the warm-up + ten-trial protocol of Section~\ref{sec:reproducibility} is the first item of methodological future work (Section~\ref{sec:future-work}).
 
 \textbf{Analysis}: The traditional backend is roughly an order of magnitude faster at p50 across operations. The Kubernetes API server introduces overhead from:
 \begin{itemize}
@@ -277,36 +282,19 @@ Error rate at peak load           & $\sim$0.1\%   & $\sim$2.5\% \\ \bottomrule
 
 The kube-billing ``error rate'' figure counts admission-control rejections caused by transient resource-version conflicts under high write concurrency, not application-level failures; the operator subsequently retries and the resource reaches \texttt{Active} state on a later reconciliation. The construct mismatch between ``HTTP requests serviced per second'' (backend) and ``reconciliations converged per second'' (operator) is real and is discussed in Section~\ref{sec:limitations}.
 
-Listing~\ref{lst:hey-output} reproduces a representative \texttt{hey} run against the backend, the form of output that underlies the backend column of Table~\ref{tab:throughput}.
+Listing~\ref{lst:hey-output} reproduces a representative \texttt{loadgen.go} run against the backend, the form of output that underlies the backend column of Table~\ref{tab:throughput}.
 
-\begin{lstlisting}[language=bash, caption={Representative \texttt{hey} output against the backend}, label={lst:hey-output}]
-$ hey -n 5000 -c 50 -t 30 -m POST \
-    -H 'Content-Type: application/json' \
-    -D body.json http://localhost:8080/subscriptions
+\begin{lstlisting}[language=bash, caption={Representative \texttt{loadgen.go} output against the backend at concurrency 50}, label={lst:hey-output}]
+$ go run ./bench -base http://localhost:8080 \
+    -n 2000 -c 50 -op create-subscription \
+    -plan basic -out create-subscription.csv
 
-Summary:
-  Total:     5.2391 secs
-  Slowest:   0.0941 secs
-  Fastest:   0.0021 secs
-  Average:   0.0517 secs
-  Requests/sec:  954.36
-
-Response time histogram:
-  0.002 [1]    |
-  0.011 [42]   |
-  0.020 [167]  |==
-  0.030 [1093] |==============
-  ...
-
-Latency distribution:
-  50% in 0.0102 secs
-  95% in 0.0247 secs
-  99% in 0.0494 secs
-
-Status code distribution:
-  [201] 4995 responses
-  [500] 5    responses
+op=create-subscription base=http://localhost:8080 n=2000 c=50 total=1m18.907s
+ok=1998 err=2 throughput=25.3 req/s
+p50=259.948042ms p95=13.092324458s p99=23.569794208s max=23.83683075s
 \end{lstlisting}
+
+\textbf{Concurrency caveat.} The throughput and 23-second tail above are dominated by the backend's per-IP rate limiter (10 req/s with burst 20, configured in \texttt{main.go}). At lower concurrency that fits inside the burst budget, the same harness sees p50 latencies of 0.5--2\,ms, p95 around 10--20\,ms, and throughput of several hundred requests per second --- the regime that populates Table~\ref{tab:e2e-latency}. The rate limiter is part of the system under test, and the long tail reflects its behaviour rather than an artefact of the harness.
 
 \textbf{Analysis}: The traditional backend achieves substantially higher throughput at this concurrency level. The Kubernetes API server becomes a bottleneck under sustained write load not because of a single hard rate limit but because of the combined effect of API Priority and Fairness flow-control queues~\cite{k8s_apf}, etcd transaction commit latency~\cite{etcd_impact}, and watch fan-out work. The number reported here is the throughput observed on a single-node Minikube cluster and should not be read as a cluster-wide ceiling for production Kubernetes deployments; the construct mismatch between HTTP throughput and reconcile-driven throughput is discussed in Section~\ref{sec:limitations}.
 
@@ -452,7 +440,7 @@ Table~\ref{tab:summary-comparison} summarises the comparison along the four eval
 \toprule
 \textbf{Axis} & \textbf{Where the difference lies} & \textbf{Magnitude or mechanism} \\ \midrule
 Static code size &
-backend-billing larger (15 vs 7 non-test files; 1{,}401 vs 1{,}043 LOC) &
+backend-billing larger (15 vs 7 non-test files; 1{,}401 vs 1{,}013 LOC) &
 The traditional layered structure (handler/repo/middleware/worker) is more verbose than the reconcile-loop concentration in kube-billing. \\
 Dependency footprint &
 Comparable; identical direct count (9 each) &

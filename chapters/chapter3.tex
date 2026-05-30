@@ -170,14 +170,14 @@ The system uses a synchronous request-response model with asynchronous backgroun
 
 \begin{itemize}
     \item \textbf{Synchronous path}: Clients send HTTP requests $\rightarrow$ handlers validate input $\rightarrow$ repository executes database operations $\rightarrow$ response returned
-    \item \textbf{Asynchronous path}: Background worker runs every 30 seconds, queries PostgreSQL for expired subscriptions, updates state to \texttt{Expired}
+    \item \textbf{Asynchronous path}: Background worker runs once per minute, queries PostgreSQL for subscriptions whose \texttt{next\_billing} has passed, and marks them as \texttt{Expired}
 \end{itemize}
 
 The background worker implements time-based business logic that cannot be handled synchronously:
 
 \begin{lstlisting}[language=Go, caption={Background expiration checker worker}, label={lst:worker}]
-// Worker runs every 30 seconds
-ticker := time.NewTicker(30 * time.Second)
+// Worker runs once per minute
+ticker := time.NewTicker(1 * time.Minute)
 for range ticker.C {
     expiredSubs := repo.FindExpired(time.Now())
     for _, sub := range expiredSubs {
@@ -579,7 +579,7 @@ The systems are evaluated along four axes, mirroring the structure that Chapter~
 
 \begin{description}
     \item[Code metrics.] Source-file count, lines of code (excluding tests), test coverage, direct and transitive dependency counts. These are static properties of the codebase that should be measurable rather than estimated.
-    \item[Performance.] End-to-end latency at p50, p95, and p99 for the four user-facing operations; throughput under concurrent load; microbenchmark results for isolated functions. The two systems are loaded with comparable concurrency rather than the apples-to-oranges sequential-vs-parallel framing used in earlier drafts; the construct mismatch between HTTP and reconcile-driven throughput is recorded as a validity threat in Section~\ref{sec:limitations}.
+    \item[Performance.] End-to-end latency at p50, p95, and p99 for the four user-facing operations; throughput under concurrent load; microbenchmark results for isolated functions. Both systems are loaded with comparable concurrency through dedicated harnesses in their respective \texttt{bench/} directories; the construct mismatch between HTTP and reconcile-driven throughput is recorded as a validity threat in Section~\ref{sec:limitations}.
     \item[Resource utilisation.] CPU (millicores) and resident memory (MB) at idle, under load, and at peak; startup time from process launch to readiness probe pass.
     \item[Operational characteristics.] Scaling behaviour, fault tolerance under controlled disruption, and the observability surface enumerated in Table~\ref{tab:obs-summary}.
 \end{description}
